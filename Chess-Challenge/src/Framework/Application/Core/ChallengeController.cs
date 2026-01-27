@@ -8,6 +8,7 @@ using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Chess_Challenge.My_Bot;
 using static ChessChallenge.Application.Settings;
 using static ChessChallenge.Application.ConsoleHelper;
 
@@ -22,13 +23,15 @@ namespace ChessChallenge.Application
             EvilBot
         }
 
+        private bool isEthan = false;
+        
         // Game state
         readonly Random rng;
         int gameID;
         bool isPlaying;
         Board board;
         public ChessPlayer PlayerWhite { get; private set; }
-        public ChessPlayer PlayerBlack {get;private set;}
+        public ChessPlayer PlayerBlack { get;private set; }
 
         float lastMoveMadeTime;
         bool isWaitingToPlayMove;
@@ -191,13 +194,13 @@ namespace ChessChallenge.Application
                 boardUI.SetPerspective(PlayerWhite.IsHuman);
                 HumanWasWhiteLastGame = PlayerWhite.IsHuman;
             }
-            else if (PlayerWhite.Bot is MyBot && PlayerBlack.Bot is MyBot)
+            else if (PlayerWhite.Bot is EthanBot && PlayerBlack.Bot is EthanBot)
             {
                 boardUI.SetPerspective(true);
             }
             else
             {
-                boardUI.SetPerspective(PlayerWhite.Bot is MyBot);
+                boardUI.SetPerspective(PlayerWhite.Bot is EthanBot);
             }
         }
 
@@ -205,7 +208,8 @@ namespace ChessChallenge.Application
         {
             return type switch
             {
-                PlayerType.MyBot => new ChessPlayer(new MyBot(), type, GameDurationMilliseconds),
+                // PlayerType.MyBot => new ChessPlayer(new MyBot(), type, GameDurationMilliseconds),
+                PlayerType.MyBot => new ChessPlayer(isEthan ? new EthanBot() : new DanielBot(), type, GameDurationMilliseconds),
                 PlayerType.EvilBot => new ChessPlayer(new EvilBot(), type, GameDurationMilliseconds),
                 _ => new ChessPlayer(new HumanPlayer(boardUI), type)
             };
