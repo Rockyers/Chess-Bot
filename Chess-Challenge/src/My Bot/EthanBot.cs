@@ -3,20 +3,44 @@ using ChessChallenge.API;
 
 public class EthanBot : IChessBot
 {
-    private const int Depth = 6;
+    private enum TTFlag : byte
+    {
+        Exact,
+        LowerBound,
+        UpperBound
+    }
+
+    private struct TTEntry
+    {
+        public ulong Key;
+        public int Depth;
+        public int Score;
+        public TTFlag Flag;
+        public Move BestMove;
+    }
+
+    private const int TTSize = 1 << 20; // ~1M entries
+    private TTEntry[] _tt = new TTEntry[TTSize];
+    
+    private ref TTEntry Probe(ulong key)
+    {
+        return ref _tt[key & (TTSize - 1)];
+    }
+    
+    private const int startingDepth = 6;
     
     public Move Think(Board board, Timer timer)
     {
-        int maxScore = int.MinValue;
+        var maxScore = int.MinValue;
         Move? bestMove = null;
         
         Span<Move> moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves);
 
-        foreach (Move move in moves)
+        foreach (var move in moves)
         {
             board.MakeMove(move);
-            var score = Negate(Search(Depth - 1, board, int.MinValue, int.MaxValue));
+            var score = Negate(Search(startingDepth - 1, board, int.MinValue, int.MaxValue));
             board.UndoMove(move);
 
             if (score > maxScore)
@@ -40,12 +64,33 @@ public class EthanBot : IChessBot
         if (depth == 0)
             return RelativeEvaluate(board);
         
+        var key = board.ZobristKey;
+        ref var entry = ref Probe(key);
+
+        if (entry.Key == key && entry.Depth >= depth)
+        {
+            switch (entry.Flag)
+            {
+                case TTFlag.Exact:
+                case TTFlag.LowerBound when entry.Score >= beta:
+                case TTFlag.UpperBound when entry.Score <= alpha:
+                    return entry.Score;
+                case TTFlag.LowerBound:
+                    alpha = Math.Max(alpha, entry.Score);
+                    break;
+                case TTFlag.UpperBound:
+                    beta = Math.Min(beta, entry.Score);
+                    break;
+            }
+        }
+        
         var max = int.MinValue;
+        var originalAlpha = alpha;
         
         Span<Move> moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves);
 
-        foreach (Move move in moves)
+        foreach (var move in moves)
         {
             board.MakeMove(move);
             var score = Negate(Search(depth - 1, board, Negate(beta), Negate(alpha)));            
@@ -83,7 +128,7 @@ public class EthanBot : IChessBot
             return 0;
         
         if (board.IsInCheckmate())
-            return board.IsWhiteToMove ? int.MinValue : int.MaxValue;
+            return board.IsWhiteToMove ? int.MinValue + board.PlyCount : int.MaxValue - board.PlyCount;
         
         for (var i = 1; i < 6; i++)
         {
