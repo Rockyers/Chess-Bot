@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Reflection.Metadata;
 using ChessChallenge.API;
 
 public class EthanBot : IChessBot
@@ -9,9 +10,6 @@ public class EthanBot : IChessBot
     private const int TTSize = 1 << 20; // ~1M entries
     private readonly TTEntry[] _tt = new TTEntry[TTSize];
     
-    // Killer moves, 2 per depth
-    private readonly Move[,] _killerMoves = new Move[32, 2];
-
     private enum TTFlag { Exact, LowerBound, UpperBound }
 
     private struct TTEntry
@@ -23,13 +21,22 @@ public class EthanBot : IChessBot
         public Move BestMove;
     }
     
+    // Killer moves, 2 per depth
+    private readonly Move[,] _killerMoves = new Move[256, 2];
+    
+    private const int MaxQuiesenceDepth = 20;
+    
     public Move Think(Board board, Timer timer)
     {
+        // Clear the TT for new games
+        if (board.PlyCount < 2)
+            Array.Clear(_tt, 0, _tt.Length);
+        
         var (zKey, _, entry) = GetZobrist(board);
 
         Span<Move> moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves);
-        GetAndOrderMoves(board, moves, entry, zKey);
+        OrderMoves(board, moves, entry, zKey);
 
         var maxScore = int.MinValue;
         var bestMove = moves[0];
@@ -85,14 +92,14 @@ public class EthanBot : IChessBot
         }
         
         if (depth == 0)
-            return RelativeEvaluate(board);
+            return Quiesence(board, alpha, beta);
         
         var maxScore = int.MinValue;
         var bestMove = Move.NullMove;
         
         Span<Move> moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves);
-        GetAndOrderMoves(board, moves, entry, zKey);
+        OrderMoves(board, moves, entry, zKey);
 
         foreach (var move in moves)
         {
@@ -140,18 +147,66 @@ public class EthanBot : IChessBot
         return maxScore;
     }
 
-    private void UpdateKillerMoves(Move move, int ply)
+    private int Quiesence(Board board, int alpha, int beta, int qDepth = 1)
     {
-        if (move.IsCapture)
-            return;
+        var eval = RelativeEvaluate(board);
 
-        if (_killerMoves[ply, 0] == move) return;
+        if (qDepth > MaxQuiesenceDepth)
+            return eval;
         
-        _killerMoves[ply, 1] = _killerMoves[ply, 0];
-        _killerMoves[ply, 0] = move;
+        if (eval >= beta)
+            return beta;
+        if (eval > alpha)
+            alpha = eval;
+        
+        Span<Move> moves = stackalloc Move[128];
+        board.GetLegalMovesNonAlloc(ref moves, true);
+        OrderCaptures(moves);
+
+        foreach (var move in moves)
+        {
+            board.MakeMove(move);
+            var score = -Quiesence(board, Negate(beta), Negate(alpha), qDepth + 1);
+            board.UndoMove(move);
+
+            if (score >= beta)
+                return beta;
+            if (score > alpha)
+                alpha = score;
+        }
+
+        return alpha;
     }
 
-    private void GetAndOrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey)
+    private int RelativeEvaluate(Board board)
+    {
+        var eval = EvaluateBoard(board);
+
+        return board.IsWhiteToMove ? eval : Negate(eval);
+    }
+
+    private int EvaluateBoard(Board board)
+    {
+        if (board.IsInStalemate())
+            return 0;
+        
+        if (board.IsInCheckmate())
+            return board.IsWhiteToMove 
+                ? int.MinValue + board.PlyCount 
+                : int.MaxValue - board.PlyCount;
+     
+        var eval = 0;
+        
+        for (var i = 1; i < 6; i++)
+        {
+            var pieceType = (PieceType) i;
+            eval += MaterialWeight(pieceType, true, board) - MaterialWeight(pieceType, false, board);
+        }
+
+        return eval;
+    }
+
+    private void OrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey)
     {
         var hasTTMove = ttEntry.Key == zKey;
 
@@ -187,6 +242,17 @@ public class EthanBot : IChessBot
         }
     }
     
+    private void UpdateKillerMoves(Move move, int ply)
+    {
+        if (move.IsCapture)
+            return;
+
+        if (_killerMoves[ply, 0] == move) return;
+        
+        _killerMoves[ply, 1] = _killerMoves[ply, 0];
+        _killerMoves[ply, 0] = move;
+    }
+    
     private void OrderCaptures(Span<Move> captures)
     {
         Span<int> scores = stackalloc int[captures.Length];
@@ -212,34 +278,6 @@ public class EthanBot : IChessBot
         }
     }
     
-    private int RelativeEvaluate(Board board)
-    {
-        var eval = EvaluateBoard(board);
-
-        return board.IsWhiteToMove ? eval : Negate(eval);
-    }
-
-    private int EvaluateBoard(Board board)
-    {
-        if (board.IsInStalemate())
-            return 0;
-        
-        if (board.IsInCheckmate())
-            return board.IsWhiteToMove 
-                ? int.MinValue + board.PlyCount 
-                : int.MaxValue - board.PlyCount;
-     
-        var eval = 0;
-        
-        for (var i = 1; i < 6; i++)
-        {
-            var pieceType = (PieceType) i;
-            eval += MaterialWeight(pieceType, true, board) - MaterialWeight(pieceType, false, board);
-        }
-
-        return eval;
-    }
-    
     // Piece values: null, pawn, knight, bishop, rook, queen
     private readonly int[] _pieceValues = { 0, 100, 300, 300, 500, 900, 0 };
     private int MaterialWeight(PieceType pieceType, bool isWhite, Board board)
@@ -253,7 +291,7 @@ public class EthanBot : IChessBot
         return _pieceValues[(int)move.CapturePieceType] * 10
                - _pieceValues[(int)move.MovePieceType];
     }
-    
+
     private (ulong zKey, int ttIndex, TTEntry entry) GetZobrist(Board board)
     {
         var zKey = board.ZobristKey;
