@@ -25,10 +25,10 @@ public class EthanBot : IChessBot
         var maxScore = int.MinValue;
         Move? bestMove = null;
         
-        var (_, _, entry) = GetZobrist(board);
+        var (zKey, _, entry) = GetZobrist(board);
 
         Span<Move> moves = stackalloc Move[128];
-        GetAndOrderMoves(board, moves, entry);
+        GetAndOrderMoves(board, moves, entry, zKey);
 
         foreach (var move in moves)
         {
@@ -84,7 +84,7 @@ public class EthanBot : IChessBot
         var bestMove = Move.NullMove;
         
         Span<Move> moves = stackalloc Move[128];
-        GetAndOrderMoves(board, moves, entry);
+        GetAndOrderMoves(board, moves, entry, zKey);
 
         foreach (var move in moves)
         {
@@ -128,15 +128,19 @@ public class EthanBot : IChessBot
         return maxScore;
     }
 
-    private static void GetAndOrderMoves(Board board, Span<Move> moves, TTEntry ttEntry)
+    private void GetAndOrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey)
     {
         board.GetLegalMovesNonAlloc(ref moves);
+
+        TTEntry? entry = ttEntry;
+        if (entry.Value.Key != zKey || entry.Value.Depth == 0)
+            entry = null;
         
         Span<int> scores = stackalloc int[moves.Length];
         for (var i = 0; i < moves.Length; i++)
         {
             var move = moves[i];
-            var score = EvaluateMove(ttEntry, move);
+            var score = EvaluateMove(entry, move);
             scores[i] = score;
         }
         
@@ -159,15 +163,15 @@ public class EthanBot : IChessBot
         }
     }
 
-    private static int EvaluateMove(TTEntry ttEntry, Move move)
+    private int EvaluateMove(TTEntry? ttEntry, Move move)
     {
         var score = 0;
 
-        if (move == ttEntry.BestMove)
+        if (move == ttEntry?.BestMove)
             score = 1000000;
 
         if (move.IsCapture)
-            score += 10000 + (int) move.CapturePieceType * 100 - (int) move.MovePieceType;
+            score += 10000 + _pieceValues[(int) move.CapturePieceType] * 100 - _pieceValues[(int) move.MovePieceType];
         
         return score;
     }
@@ -201,7 +205,7 @@ public class EthanBot : IChessBot
     }
     
     // Piece values: null, pawn, knight, bishop, rook, queen
-    private readonly int[] _pieceValues = { 0, 100, 300, 300, 500, 900 };
+    private readonly int[] _pieceValues = { 0, 100, 300, 300, 500, 900, 0 };
     private int MaterialWeight(PieceType pieceType, bool isWhite, Board board)
     {
         var bitboard = board.GetPieceBitboard(pieceType, isWhite);
