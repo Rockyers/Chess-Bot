@@ -72,6 +72,7 @@ public class DanielBot : IChessBot
         // Get opponent's best move
         var bestEval = int.MinValue;
         var moves = GetSortedLegalMoves(board);
+        if (moves.Length == 0) return currentEval;
         var bestMove = moves[0];
         foreach (var move in moves)
         {
