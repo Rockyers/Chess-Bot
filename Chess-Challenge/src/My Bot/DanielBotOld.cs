@@ -5,7 +5,8 @@ namespace Chess_Challenge.My_Bot;
 
 public class DanielBotOld : IChessBot
 {
-    
+    public string Name() => "Old Daniel Bot";
+
     int[] fileValues = [100, 200, 300, 400, 400, 300, 200, 100];
     int[] pawnFileValues = [-200, -200, 100, 400, 400, 100, -200, -200];
     // Piece values: null, pawn, knight, bishop, rook, queen, king

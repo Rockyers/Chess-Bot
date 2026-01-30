@@ -2,7 +2,6 @@
 using ChessChallenge.Example;
 using Raylib_cs;
 using System;
-using System.IO;
 using System.Linq;
 using System.Runtime.ExceptionServices;
 using System.Text;
@@ -24,6 +23,7 @@ namespace ChessChallenge.Application
         }
 
         private bool isEthan = false;
+        private bool _ethanVsDaniel = false;
         
         // Game state
         readonly Random rng;
@@ -208,9 +208,8 @@ namespace ChessChallenge.Application
         {
             return type switch
             {
-                // PlayerType.MyBot => new ChessPlayer(new MyBot(), type, GameDurationMilliseconds),
-                PlayerType.MyBot => new ChessPlayer(isEthan ? new EthanBot() : new DanielBot(), type, GameDurationMilliseconds),
-                PlayerType.EvilBot => new ChessPlayer(new EvilBot(), type, GameDurationMilliseconds),
+                PlayerType.MyBot => new ChessPlayer(Bot1Ethan ? new EthanBot() : new DanielBot(), type, GameDurationMilliseconds),
+                PlayerType.EvilBot => new ChessPlayer(EthanVsDaniel ? (Bot1Ethan ? new DanielBot() : new EthanBot()) : new EvilBot(), type, GameDurationMilliseconds),
                 _ => new ChessPlayer(new HumanPlayer(boardUI), type)
             };
         }
@@ -385,7 +384,7 @@ namespace ChessChallenge.Application
             MatchStatsUI.DrawMatchStats(this);
         }
 
-        static string GetPlayerName(ChessPlayer player) => GetPlayerName(player.PlayerType);
+        static string GetPlayerName(ChessPlayer player) => player.GetName();
         static string GetPlayerName(PlayerType type) => type.ToString();
 
         public void StartNewBotMatch(PlayerType botTypeA, PlayerType botTypeB)

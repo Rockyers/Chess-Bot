@@ -7,6 +7,8 @@ namespace ChessChallenge.Example
     // Plays randomly otherwise.
     public class EvilBot : IChessBot
     {
+        public string Name() => "Evil Bot";
+
         // Piece values: null, pawn, knight, bishop, rook, queen, king
         int[] pieceValues = { 0, 100, 300, 300, 500, 900, 10000 };
 

@@ -65,6 +65,9 @@ namespace ChessChallenge.Application
             }
         }
 
-
+        public string GetName()
+        {
+            return IsBot ? Bot.Name() : "Human";
+        }
     }
 }

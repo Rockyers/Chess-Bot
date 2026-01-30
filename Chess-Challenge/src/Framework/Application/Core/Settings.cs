@@ -11,6 +11,10 @@ namespace ChessChallenge.Application
         public const int IncrementMilliseconds = 0 * 1000;
         public const float MinMoveDelay = 0;
         public static readonly bool RunBotsOnSeparateThread = true;
+        
+        // Bot settings
+        public const bool Bot1Ethan = true;
+        public const bool EthanVsDaniel = true;
 
         // Display settings
         public const bool DisplayBoardCoordinates = true;

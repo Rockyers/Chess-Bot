@@ -7,6 +7,8 @@ namespace Chess_Challenge.My_Bot;
 
 public class DanielBot : IChessBot
 {
+    public string Name() => "Daniel Bot";
+    
     private enum TransFlag
     {
         Exact,

@@ -2,8 +2,12 @@
 using System.Numerics;
 using ChessChallenge.API;
 
+namespace Chess_Challenge.My_Bot;
+
 public class EthanBot : IChessBot
 {
+    public string Name() => "Ethan Bot";
+    
     private const int MaximumDepth = 30;
     private const int MaxQuiesenceDepth = 15;
     private int AspirationWindow = 50;
