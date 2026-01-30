@@ -112,14 +112,18 @@ public class EthanBot : IChessBot
             _ => TTFlag.Exact
         };
         
-        _tt[ttIndex] = new TTEntry()
+        // if entry is EMPTY or depth is higher (more accurate eval)
+        if (entry.Key != zKey || depth >= entry.Depth)
         {
-            Key = zKey,
-            Depth = depth,
-            Score = maxScore,
-            Flag = flag,
-            BestMove = bestMove
-        };
+            _tt[ttIndex] = new TTEntry
+            {
+                Key = zKey,
+                Depth = depth,
+                Score = maxScore,
+                Flag = flag,
+                BestMove = bestMove
+            };
+        }
         
         return maxScore;
     }
