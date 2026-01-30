@@ -23,7 +23,7 @@ namespace ChessChallenge.Application
             EvilBot
         }
 
-        private bool isEthan = true;
+        private bool isEthan = false;
         
         // Game state
         readonly Random rng;
