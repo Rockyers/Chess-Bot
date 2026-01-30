@@ -4,7 +4,7 @@ using ChessChallenge.API;
 
 public class EthanBot : IChessBot
 {
-    private const int MaximumDepth = 60;
+    private const int MaximumDepth = 30;
     private const int MaxQuiesenceDepth = 15;
     private int AspirationWindow = 50;
 
@@ -39,7 +39,7 @@ public class EthanBot : IChessBot
         var timeLimit = timer.MillisecondsRemaining / 40;
 
         // Decay History
-        if (board.PlyCount % 5 == 0 && board.PlyCount > 1) 
+        if (board.PlyCount % 6 == 0 && board.PlyCount > 1) 
         {
             for (var s = 0; s < 2; s++)
                 for (var f = 0; f < 64; f++)
@@ -57,9 +57,7 @@ public class EthanBot : IChessBot
 
         var d = 0;
         var lastScore = 0;
-
-        var window = AspirationWindow;
-
+        
         for (var depth = 1; depth < MaximumDepth; depth++)
         {
             if (timer.MillisecondsElapsedThisTurn >= timeLimit)
@@ -67,10 +65,8 @@ public class EthanBot : IChessBot
             
             d = depth;
             
-            window = Math.Min(window, Math.Abs(lastScore / 4) + 50);
-            
-            var alpha = Math.Max(MinValue + 1, lastScore - window);
-            var beta = Math.Min(MaxValue - 1, lastScore + window);
+            var alpha = Math.Max(MinValue + 1, lastScore - AspirationWindow);
+            var beta = Math.Min(MaxValue - 1, lastScore + AspirationWindow);
             
             var maxScore = MinValue;
 
@@ -80,7 +76,7 @@ public class EthanBot : IChessBot
                 BubbleMoves(moves, ref writeIndex, move => move == _previousBestMove);
             }
             
-            OrderMoves(board, moves, entry, zKey, 1);
+            OrderMoves(board, moves, entry, zKey, true);
             
             foreach (var move in moves)
             {
@@ -149,15 +145,22 @@ public class EthanBot : IChessBot
                 case TTFlag.UpperBound:
                     beta = Math.Min(beta, entry.Score);
                     break;
-                default:
-                    throw new ArgumentOutOfRangeException();
             }
 
             if (alpha >= beta)
-            {
-                UpdateQuietCutoff(entry.BestMove, board.PlyCount, board.IsWhiteToMove, depth);
-                return entry.Score;
-            }
+                return alpha;
+        }
+        
+        // NULL MOVE PRUNING
+        if (!board.IsInCheck() && depth > 3 && HasNonPawnMaterial(board))
+        {
+            board.TrySkipTurn();
+            var score = -Search(depth - 3, board, -beta, -beta + 1);
+            board.UndoSkipTurn();
+
+            if (score >= beta)
+                // HUGE skip whole branch
+                return beta;
         }
         
         if (depth == 0)
@@ -170,11 +173,30 @@ public class EthanBot : IChessBot
         board.GetLegalMovesNonAlloc(ref moves);
         OrderMoves(board, moves, entry, zKey);
 
+        var moveIndex = 0;
         foreach (var move in moves)
         {
             var ply = board.PlyCount;
             board.MakeMove(move);
-            var score = -Search(depth - 1, board, -beta, -alpha);
+
+            var score = 0;
+            var nextDepth = depth - 1;
+
+            var reduce = moveIndex >= 4 && depth >= 3 && !board.IsInCheck() && !move.IsCapture;
+
+            if (reduce)
+            {
+                score = -Search(nextDepth - 1, board, -alpha - 1, -alpha);
+
+                if (score > alpha)
+                    reduce = false;
+            }
+
+            if (!reduce)
+            {
+                score = -Search(nextDepth, board, -beta, -alpha);
+            }
+            
             board.UndoMove(move);
             
             if (score > maxScore)
@@ -191,6 +213,8 @@ public class EthanBot : IChessBot
                 UpdateQuietCutoff(move, ply, board.IsWhiteToMove, depth);
                 break;
             }
+
+            moveIndex++;
         }
 
         var flag = (maxScore <= originalAlpha, maxScore >= beta) switch
@@ -275,7 +299,7 @@ public class EthanBot : IChessBot
         return eval;
     }
 
-    private void OrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey, int startIndex = 0)
+    private void OrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey, bool root = false)
     {
         Span<int> scores = stackalloc int[moves.Length];
 
@@ -291,6 +315,9 @@ public class EthanBot : IChessBot
         {
             var move = moves[i];
             var score = 0;
+
+            if (root && move == _previousBestMove && _previousBestMove != Move.NullMove)
+                score += 1500000;
 
             if (move == ttMove)
                 score += 1000000;
@@ -381,7 +408,9 @@ public class EthanBot : IChessBot
     }
     
     // Piece values: null, pawn, knight, bishop, rook, queen
-    private readonly int[] _pieceValues = { 0, 100, 300, 300, 500, 900, 0 };
+    private readonly int[] _pieceValues   = { 0, 100, 320, 330, 500, 900, 0 };
+    private readonly int[] _pieceValuesEG = { 0, 120, 310, 330, 500, 900, 0 };
+    private readonly int[] _phaseValue    = { 0,   0,   1,   1,   2,   4, 0 };
     private int MaterialWeight(PieceType pieceType, bool isWhite, Board board)
     {
         var bitboard = board.GetPieceBitboard(pieceType, isWhite);
@@ -393,6 +422,19 @@ public class EthanBot : IChessBot
         return _pieceValues[(int)move.CapturePieceType] * 10
                - _pieceValues[(int)move.MovePieceType];
     }
+    
+    private bool HasNonPawnMaterial(Board board)
+    {
+        var white = board.IsWhiteToMove;
+
+        // Knights, bishops, rooks, queens
+        return
+            board.GetPieceBitboard(PieceType.Knight, white) != 0 ||
+            board.GetPieceBitboard(PieceType.Bishop, white) != 0 ||
+            board.GetPieceBitboard(PieceType.Rook,   white) != 0 ||
+            board.GetPieceBitboard(PieceType.Queen,  white) != 0;
+    }
+
 
     private (ulong zKey, int ttIndex, TTEntry entry) GetZobrist(Board board)
     {
