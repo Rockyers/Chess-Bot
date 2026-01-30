@@ -1,13 +1,20 @@
 ﻿using System;
-using System.Reflection.Metadata;
+using System.Numerics;
 using ChessChallenge.API;
 
 public class EthanBot : IChessBot
 {
-    private const int StartingDepth = 6;
+    private const int MaximumDepth = 60;
+    private const int MaxQuiesenceDepth = 15;
+    private int AspirationWindow = 50;
+
+    private const int MinValue = -100_000_000;
+    private const int MaxValue =  100_000_000;
+
+    private Move _previousBestMove = Move.NullMove;
     
     // Transposition Table
-    private const int TTSize = 1 << 20; // ~1M entries
+    private const int TTSize = 1 << 22; // ~4M entries
     private readonly TTEntry[] _tt = new TTEntry[TTSize];
     
     private enum TTFlag { Exact, LowerBound, UpperBound }
@@ -24,35 +31,97 @@ public class EthanBot : IChessBot
     // Killer moves, 2 per depth
     private readonly Move[,] _killerMoves = new Move[256, 2];
     
-    private const int MaxQuiesenceDepth = 20;
+    // History Heuristic
+    private readonly int[,,] _history = new int[2, 64, 64];
     
     public Move Think(Board board, Timer timer)
     {
-        // Clear the TT for new games
-        if (board.PlyCount < 2)
-            Array.Clear(_tt, 0, _tt.Length);
+        var timeLimit = timer.MillisecondsRemaining / 40;
+
+        // Decay History
+        if (board.PlyCount % 5 == 0 && board.PlyCount > 1) 
+        {
+            for (var s = 0; s < 2; s++)
+                for (var f = 0; f < 64; f++)
+                    for (var t = 0; t < 64; t++)
+                        _history[s, f, t] /= 2;
+        }
         
         var (zKey, _, entry) = GetZobrist(board);
 
         Span<Move> moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves);
         OrderMoves(board, moves, entry, zKey);
-
-        var maxScore = int.MinValue;
-        var bestMove = moves[0];
         
-        foreach (var move in moves)
-        {
-            board.MakeMove(move);
-            var score = Negate(Search(StartingDepth - 1, board, int.MinValue, int.MaxValue));
-            board.UndoMove(move);
+        var bestMove = moves[0];
 
-            if (score <= maxScore) continue;
+        var d = 0;
+        var lastScore = 0;
+
+        var window = AspirationWindow;
+
+        for (var depth = 1; depth < MaximumDepth; depth++)
+        {
+            if (timer.MillisecondsElapsedThisTurn >= timeLimit)
+                break;
             
-            maxScore = score;
-            bestMove = move;
+            d = depth;
+            
+            window = Math.Min(window, Math.Abs(lastScore / 4) + 50);
+            
+            var alpha = Math.Max(MinValue + 1, lastScore - window);
+            var beta = Math.Min(MaxValue - 1, lastScore + window);
+            
+            var maxScore = MinValue;
+
+            if (_previousBestMove != Move.NullMove)
+            {
+                var writeIndex = 0;
+                BubbleMoves(moves, ref writeIndex, move => move == _previousBestMove);
+            }
+            
+            OrderMoves(board, moves, entry, zKey, 1);
+            
+            foreach (var move in moves)
+            {
+                if (timer.MillisecondsElapsedThisTurn >= timeLimit)
+                    break;
+            
+                board.MakeMove(move);
+                var score = -Search(depth, board, alpha, beta);
+                board.UndoMove(move);
+
+                if (score <= maxScore) continue;
+            
+                maxScore = score;
+                bestMove = move;
+            }
+
+            if (maxScore <= alpha || maxScore >= beta)
+            {
+                maxScore = MinValue;
+                foreach (var move in moves)
+                {
+                    if (timer.MillisecondsElapsedThisTurn >= timeLimit)
+                        break;
+
+                    board.MakeMove(move);
+                    var score = -Search(depth, board, MinValue, MaxValue);
+                    board.UndoMove(move);
+
+                    if (score <= maxScore) continue;
+
+                    maxScore = score;
+                    bestMove = move;
+                }
+            }
+
+            lastScore = maxScore;
+            _previousBestMove = bestMove;
         }
 
+        Console.WriteLine("Reached a depth of " + d);
+        
         return bestMove;
     }
 
@@ -64,7 +133,7 @@ public class EthanBot : IChessBot
             return 0;
 
         if (board.IsInCheckmate())
-            return int.MinValue + board.PlyCount;
+            return MinValue + board.PlyCount;
 
         var (zKey, ttIndex, entry) = GetZobrist(board);
 
@@ -86,7 +155,7 @@ public class EthanBot : IChessBot
 
             if (alpha >= beta)
             {
-                UpdateKillerMoves(entry.BestMove, board.PlyCount);
+                UpdateQuietCutoff(entry.BestMove, board.PlyCount, board.IsWhiteToMove, depth);
                 return entry.Score;
             }
         }
@@ -94,7 +163,7 @@ public class EthanBot : IChessBot
         if (depth == 0)
             return Quiesence(board, alpha, beta);
         
-        var maxScore = int.MinValue;
+        var maxScore = MinValue;
         var bestMove = Move.NullMove;
         
         Span<Move> moves = stackalloc Move[128];
@@ -105,7 +174,7 @@ public class EthanBot : IChessBot
         {
             var ply = board.PlyCount;
             board.MakeMove(move);
-            var score = Negate(Search(depth - 1, board, Negate(beta), Negate(alpha)));
+            var score = -Search(depth - 1, board, -beta, -alpha);
             board.UndoMove(move);
             
             if (score > maxScore)
@@ -119,7 +188,7 @@ public class EthanBot : IChessBot
 
             if (alpha >= beta)
             {
-                UpdateKillerMoves(move, ply);
+                UpdateQuietCutoff(move, ply, board.IsWhiteToMove, depth);
                 break;
             }
         }
@@ -161,12 +230,12 @@ public class EthanBot : IChessBot
         
         Span<Move> moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves, true);
-        OrderCaptures(moves);
+        OrderCaptures(moves, 0, moves.Length);
 
         foreach (var move in moves)
         {
             board.MakeMove(move);
-            var score = -Quiesence(board, Negate(beta), Negate(alpha), qDepth + 1);
+            var score = -Quiesence(board, -beta, -alpha, qDepth + 1);
             board.UndoMove(move);
 
             if (score >= beta)
@@ -182,7 +251,7 @@ public class EthanBot : IChessBot
     {
         var eval = EvaluateBoard(board);
 
-        return board.IsWhiteToMove ? eval : Negate(eval);
+        return board.IsWhiteToMove ? eval : -eval;
     }
 
     private int EvaluateBoard(Board board)
@@ -192,8 +261,8 @@ public class EthanBot : IChessBot
         
         if (board.IsInCheckmate())
             return board.IsWhiteToMove 
-                ? int.MinValue + board.PlyCount 
-                : int.MaxValue - board.PlyCount;
+                ? MinValue + board.PlyCount 
+                : MaxValue - board.PlyCount;
      
         var eval = 0;
         
@@ -206,27 +275,56 @@ public class EthanBot : IChessBot
         return eval;
     }
 
-    private void OrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey)
+    private void OrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey, int startIndex = 0)
     {
-        var hasTTMove = ttEntry.Key == zKey;
+        Span<int> scores = stackalloc int[moves.Length];
 
-        var writeIndex = 0;
-        if (hasTTMove && ttEntry.BestMove != Move.NullMove)
-            BubbleMoves(moves, ref writeIndex, move => move == ttEntry.BestMove);
+        var ply = board.PlyCount;
 
-        for (var k = 0; k < 2; k++)
+        var ttMove = (ttEntry.Key == zKey) ? ttEntry.BestMove : Move.NullMove;
+        var killer0 = _killerMoves[ply, 0];
+        var killer1 = _killerMoves[ply, 1];
+
+        var side = board.IsWhiteToMove ? 0 : 1;
+
+        for (var i = 0; i < moves.Length; i++)
         {
-            var k1 = k;
-            var killer = _killerMoves[board.PlyCount, k1];
-            
-            if (killer != Move.NullMove)
-                BubbleMoves(moves, ref writeIndex, move => move == killer);
-        }
+            var move = moves[i];
+            var score = 0;
 
-        var startOfCaptures = writeIndex;
-        BubbleMoves(moves, ref writeIndex, move => move.IsCapture);
+            if (move == ttMove)
+                score += 1000000;
+            
+            else if (move == killer0)
+                score += 900000;
+            else if (move == killer1)
+                score += 800000;
+
+            if (move.IsCapture)
+                score += CaptureScore(move);
+            else
+                score += _history[side, move.StartSquare.Index, move.TargetSquare.Index];
+            
+            scores[i] = score;
+        }
         
-        OrderCaptures(moves[startOfCaptures..writeIndex]);
+        // Insertion Sort
+        for (var i = 1; i < moves.Length; i++)
+        {
+            var move = moves[i];
+            var score = scores[i];
+            var j = i - 1;
+
+            while (j >= 0 && scores[j] < score)
+            {
+                moves[j + 1] = moves[j];
+                scores[j + 1] = scores[j];
+                j--;
+            }
+
+            moves[j + 1] = move;
+            scores[j + 1] = score;
+        }
     }
 
     private static void BubbleMoves(Span<Move> moves, ref int writeIndex, Predicate<Move> predicate)
@@ -242,25 +340,29 @@ public class EthanBot : IChessBot
         }
     }
     
-    private void UpdateKillerMoves(Move move, int ply)
+    private void UpdateQuietCutoff(Move move, int ply, bool isWhiteToPlay, int depth)
     {
         if (move.IsCapture)
             return;
 
-        if (_killerMoves[ply, 0] == move) return;
-        
-        _killerMoves[ply, 1] = _killerMoves[ply, 0];
-        _killerMoves[ply, 0] = move;
+        if (_killerMoves[ply, 0] != move)
+        {
+            _killerMoves[ply, 1] = _killerMoves[ply, 0];
+            _killerMoves[ply, 0] = move;
+        }
+
+        var side = isWhiteToPlay ? 0 : 1;
+        _history[side, move.StartSquare.Index, move.TargetSquare.Index] += depth * depth;
     }
     
-    private void OrderCaptures(Span<Move> captures)
+    private void OrderCaptures(Span<Move> captures, int start, int end)
     {
         Span<int> scores = stackalloc int[captures.Length];
 
-        for (var i = 0; i < captures.Length; i++)
+        for (var i = start; i < end; i++)
             scores[i] = CaptureScore(captures[i]);
 
-        for (var i = 0; i < captures.Length; i++)
+        for (var i = start; i < end; i++)
         {
             var move = captures[i];
             var score = scores[i];
@@ -302,23 +404,7 @@ public class EthanBot : IChessBot
     
     private static int CountSetBits(ulong n)
     {
-        var count = 0;
-        while (n != 0)
-        {
-            count++;
-            n &= n - 1;
-        }
-        return count;
-    }
-
-    private static int Negate(int i)
-    {
-        return i switch
-        {
-            int.MinValue => int.MaxValue,
-            int.MaxValue => int.MinValue,
-            _ => -i
-        };
+        return BitOperations.PopCount(n);
     }
     
     private static void Swap(ref Move a, ref Move b)
