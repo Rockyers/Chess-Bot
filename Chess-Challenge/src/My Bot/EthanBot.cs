@@ -292,15 +292,25 @@ public class EthanBot : IChessBot
                 ? MinValue + board.PlyCount 
                 : MaxValue - board.PlyCount;
      
-        var eval = 0;
-        
-        for (var i = 1; i < 6; i++)
-        {
-            var pieceType = (PieceType) i;
-            eval += MaterialWeight(pieceType, true, board) - MaterialWeight(pieceType, false, board);
-        }
+        var middleGameEval = 0;
+        var endGameEval = 0;
+        var phase = ComputePhase(board);
 
-        return eval;
+        EvaluateMaterial(board, ref middleGameEval, ref endGameEval);
+
+        return (middleGameEval * phase + endGameEval * (24 - phase)) / 24;
+    }
+
+    private void EvaluateMaterial(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        for (var p = 0; p < 6; p++)
+        {
+            middleGameEval += MaterialWeight((PieceType)p, true, board, _pieceValues) -
+                              MaterialWeight((PieceType)p, false, board, _pieceValues);
+            
+            endGameEval += MaterialWeight((PieceType)p, true, board, _pieceValuesEndgame) -
+                           MaterialWeight((PieceType)p, false, board, _pieceValuesEndgame);
+        }
     }
 
     private void OrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey, bool root = false)
@@ -412,13 +422,27 @@ public class EthanBot : IChessBot
     }
     
     // Piece values: null, pawn, knight, bishop, rook, queen
-    private readonly int[] _pieceValues   = { 0, 100, 320, 330, 500, 900, 0 };
-    private readonly int[] _pieceValuesEG = { 0, 120, 310, 330, 500, 900, 0 };
-    private readonly int[] _phaseValue    = { 0,   0,   1,   1,   2,   4, 0 };
-    private int MaterialWeight(PieceType pieceType, bool isWhite, Board board)
+    private readonly int[] _pieceValues = [0, 100, 320, 330, 500, 900, 0];
+    private readonly int[] _pieceValuesEndgame = [0, 120, 310, 330, 500, 900, 0];
+    private readonly int[] _phaseValue = [0,   0,   1,   1,   2,   4, 0];
+    
+    private int ComputePhase(Board board)
+    {
+        var phase = 0;
+
+        for (var piece = 0; piece < 6; piece++)
+        {
+            phase += _phaseValue[piece] * (CountSetBits(board.GetPieceBitboard((PieceType)piece, true)) + 
+                                           CountSetBits(board.GetPieceBitboard((PieceType)piece, false)));
+        }
+
+        return Math.Min(phase, 24);
+    }
+    
+    private int MaterialWeight(PieceType pieceType, bool isWhite, Board board, int[] pieceValues)
     {
         var bitboard = board.GetPieceBitboard(pieceType, isWhite);
-        return CountSetBits(bitboard) * _pieceValues[(int)pieceType];
+        return CountSetBits(bitboard) * pieceValues[(int)pieceType];
     }
     
     private int CaptureScore(Move move)
