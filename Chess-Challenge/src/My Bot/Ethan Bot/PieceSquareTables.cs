@@ -150,13 +150,8 @@ public class PieceSquareTables
     private static readonly int[][] PST_MG = [[], PawnMG, KnightMG, BishopMG, RookMG, QueenMG, KingMG];
     private static readonly int[][] PST_EG = [[], PawnEG, KnightEG, BishopEG, RookEG, QueenEG, KingEG];
 
-    public static int OrientSquare(int square, bool isWhite)
+    public static int GetSquare(int piece, int square, bool endgame)
     {
-        return isWhite ? square : square ^ 0b111000;
-    }
-
-    public static int GetSquare(int piece, int oSquare, bool endgame)
-    {
-        return endgame ? PST_EG[piece][oSquare] : PST_MG[piece][oSquare];
+        return endgame ? PST_EG[piece][square] : PST_MG[piece][square];
     }
 }

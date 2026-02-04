@@ -351,7 +351,7 @@ public class EthanBot : IChessBot
         return alpha;
     }
     
-    private void OrderCaptures(Span<Move> captures, int start, int end)
+    private static void OrderCaptures(Span<Move> captures, int start, int end)
     {
         Span<int> scores = stackalloc int[captures.Length];
 
@@ -396,11 +396,11 @@ public class EthanBot : IChessBot
             board.GetPieceBitboard(PieceType.Queen,  white) != 0;
     }
 
-    // **** EVALUATE ****
+    // **** EVALUATION ****
     // Piece values: null, pawn, knight, bishop, rook, queen
-    private readonly int[] _pieceValues = [0, 100, 320, 330, 500, 900, 0];
-    private readonly int[] _pieceValuesEndgame = [0, 120, 310, 330, 500, 900, 0];
-    private readonly int[] _phaseValue = [0,   0,   1,   1,   2,   4, 0];
+    private static readonly int[] PieceValues = [0, 100, 320, 330, 500, 900, 0];
+    private static readonly int[] PieceValuesEndgame = [0, 120, 310, 330, 500, 900, 0];
+    private static readonly int[] PhaseValue = [0,   0,   1,   1,   2,   4, 0];
     
     private int RelativeEvaluate(Board board)
     {
@@ -429,20 +429,15 @@ public class EthanBot : IChessBot
         return (middleGameEval * phase + endGameEval * (24 - phase)) / 24;
     }
 
-    private void EvaluatePieceSquares(Board board, ref int middleGameEval, ref int endGameEval)
+    private static void EvaluateMaterial(Board board, ref int middleGameEval, ref int endGameEval)
     {
-        throw new NotImplementedException();
-    }
-
-    private void EvaluateMaterial(Board board, ref int middleGameEval, ref int endGameEval)
-    {
-        for (var p = 0; p < 6; p++)
+        for (var piece = 1; piece < 6; piece++)
         {
-            middleGameEval += MaterialWeight((PieceType)p, true, board, _pieceValues) -
-                              MaterialWeight((PieceType)p, false, board, _pieceValues);
+            middleGameEval += MaterialWeight((PieceType)piece, true, board, PieceValues) -
+                              MaterialWeight((PieceType)piece, false, board, PieceValues);
             
-            endGameEval += MaterialWeight((PieceType)p, true, board, _pieceValuesEndgame) -
-                           MaterialWeight((PieceType)p, false, board, _pieceValuesEndgame);
+            endGameEval += MaterialWeight((PieceType)piece, true, board, PieceValuesEndgame) -
+                           MaterialWeight((PieceType)piece, false, board, PieceValuesEndgame);
         }
     }
     
@@ -451,15 +446,48 @@ public class EthanBot : IChessBot
         var bitboard = board.GetPieceBitboard(pieceType, isWhite);
         return CountSetBits(bitboard) * pieceValues[(int)pieceType];
     }
+    
+    private static void EvaluatePieceSquares(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        // White
+        for (var piece = 1; piece < 7; piece++)
+        {
+            var pieceType = (PieceType) piece;
+            var bitboard = board.GetPieceBitboard(pieceType, true);
+            while (bitboard != 0)
+            {
+                var square = BitOperations.TrailingZeroCount(bitboard);
+                bitboard &= bitboard - 1; // Clear the rightmost set bit
+
+                middleGameEval += PieceSquareTables.GetSquare(piece, square, false);
+                endGameEval += PieceSquareTables.GetSquare(piece, square, true);
+            }
+        }
+        
+        //Black
+        for (var piece = 1; piece < 7; piece++)
+        {
+            var pieceType = (PieceType) piece;
+            var bitboard = board.GetPieceBitboard(pieceType, false);
+            while (bitboard != 0)
+            {
+                var square = BitOperations.TrailingZeroCount(bitboard) ^ 0b111000; //XOR with 111000 (56) to flip in groups of eight (flip the board) 
+                bitboard &= bitboard - 1; // Clear the rightmost set bit
+
+                middleGameEval -= PieceSquareTables.GetSquare(piece, square, false);
+                endGameEval -= PieceSquareTables.GetSquare(piece, square, true);
+            }
+        }
+    }
 
     // Calculates the phase of the game from 24 -> start/middle game, to 0 -> endgame
-    private int ComputePhase(Board board)
+    private static int ComputePhase(Board board)
     {
         var phase = 0;
 
-        for (var piece = 0; piece < 6; piece++)
+        for (var piece = 1; piece < 6; piece++)
         {
-            phase += _phaseValue[piece] * (CountSetBits(board.GetPieceBitboard((PieceType)piece, true)) + 
+            phase += PhaseValue[piece] * (CountSetBits(board.GetPieceBitboard((PieceType)piece, true)) + 
                                            CountSetBits(board.GetPieceBitboard((PieceType)piece, false)));
         }
 
@@ -467,10 +495,10 @@ public class EthanBot : IChessBot
     }
     
     // How "worth it" it is to take a piece (pawn taking a queen > queen taking a pawn)
-    private int CaptureScore(Move move)
+    private static int CaptureScore(Move move)
     {
-        return _pieceValues[(int)move.CapturePieceType] * 10
-               - _pieceValues[(int)move.MovePieceType];
+        return PieceValues[(int)move.CapturePieceType] * 10
+               - PieceValues[(int)move.MovePieceType];
     }
 
     private static int CountSetBits(ulong n) => BitOperations.PopCount(n);
