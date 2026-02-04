@@ -9,7 +9,7 @@ public class EthanBot : IChessBot
     public string Name() => "Ethan Bot";
     
     private const int MaximumDepth = 30;
-    private const int MaxQuiesenceDepth = 15;
+    private const int MaxQuiescenceDepth = 15;
     private const int AspirationWindow = 50;
 
     private const int MinValue = -100_000_000;
@@ -76,8 +76,13 @@ public class EthanBot : IChessBot
 
             if (_previousBestMove != Move.NullMove)
             {
-                var writeIndex = 0;
-                BubbleMoves(moves, ref writeIndex, move => move == _previousBestMove);
+                for (var i = 0; i < moves.Length; i++)
+                {
+                    if (moves[i] != _previousBestMove) continue;
+                
+                    Swap(ref moves[i], ref moves[0]);
+                    break;
+                }
             }
             
             OrderMoves(board, moves, entry, zKey, true);
@@ -125,6 +130,7 @@ public class EthanBot : IChessBot
         return bestMove;
     }
 
+    // **** SEARCH ****
     private int Search(int depth, Board board, int alpha, int beta)
     {
         var originalAlpha = alpha;
@@ -168,7 +174,7 @@ public class EthanBot : IChessBot
         }
         
         if (depth == 0)
-            return Quiesence(board, alpha, beta);
+            return Quiescence(board, alpha, beta);
         
         var maxScore = MinValue;
         var bestMove = Move.NullMove;
@@ -243,76 +249,22 @@ public class EthanBot : IChessBot
         
         return maxScore;
     }
-
-    private int Quiesence(Board board, int alpha, int beta, int qDepth = 1)
+    
+    private void UpdateQuietCutoff(Move move, int ply, bool isWhiteToPlay, int depth)
     {
-        var eval = RelativeEvaluate(board);
+        if (move.IsCapture)
+            return;
 
-        if (qDepth > MaxQuiesenceDepth)
-            return eval;
-        
-        if (eval >= beta)
-            return beta;
-        if (eval > alpha)
-            alpha = eval;
-        
-        Span<Move> moves = stackalloc Move[128];
-        board.GetLegalMovesNonAlloc(ref moves, true);
-        OrderCaptures(moves, 0, moves.Length);
-
-        foreach (var move in moves)
+        if (_killerMoves[ply, 0] != move)
         {
-            board.MakeMove(move);
-            var score = -Quiesence(board, -beta, -alpha, qDepth + 1);
-            board.UndoMove(move);
-
-            if (score >= beta)
-                return beta;
-            if (score > alpha)
-                alpha = score;
+            _killerMoves[ply, 1] = _killerMoves[ply, 0];
+            _killerMoves[ply, 0] = move;
         }
 
-        return alpha;
+        var side = isWhiteToPlay ? 0 : 1;
+        _history[side, move.StartSquare.Index, move.TargetSquare.Index] += depth * depth;
     }
-
-    private int RelativeEvaluate(Board board)
-    {
-        var eval = EvaluateBoard(board);
-
-        return board.IsWhiteToMove ? eval : -eval;
-    }
-
-    private int EvaluateBoard(Board board)
-    {
-        if (board.IsInStalemate())
-            return 0;
-        
-        if (board.IsInCheckmate())
-            return board.IsWhiteToMove 
-                ? MinValue + board.PlyCount 
-                : MaxValue - board.PlyCount;
-     
-        var middleGameEval = 0;
-        var endGameEval = 0;
-        var phase = ComputePhase(board);
-
-        EvaluateMaterial(board, ref middleGameEval, ref endGameEval);
-
-        return (middleGameEval * phase + endGameEval * (24 - phase)) / 24;
-    }
-
-    private void EvaluateMaterial(Board board, ref int middleGameEval, ref int endGameEval)
-    {
-        for (var p = 0; p < 6; p++)
-        {
-            middleGameEval += MaterialWeight((PieceType)p, true, board, _pieceValues) -
-                              MaterialWeight((PieceType)p, false, board, _pieceValues);
-            
-            endGameEval += MaterialWeight((PieceType)p, true, board, _pieceValuesEndgame) -
-                           MaterialWeight((PieceType)p, false, board, _pieceValuesEndgame);
-        }
-    }
-
+    
     private void OrderMoves(Board board, Span<Move> moves, TTEntry ttEntry, ulong zKey, bool root = false)
     {
         Span<int> scores = stackalloc int[moves.Length];
@@ -368,32 +320,35 @@ public class EthanBot : IChessBot
         }
     }
 
-    private static void BubbleMoves(Span<Move> moves, ref int writeIndex, Predicate<Move> predicate)
+    private int Quiescence(Board board, int alpha, int beta, int qDepth = 1)
     {
-        for (var i = writeIndex; i < moves.Length; i++)
-        {
-            if (!predicate.Invoke(moves[i])) continue;
-                
-            Swap(ref moves[i], ref moves[writeIndex]);
-            writeIndex++;
-                
-            break;
-        }
-    }
-    
-    private void UpdateQuietCutoff(Move move, int ply, bool isWhiteToPlay, int depth)
-    {
-        if (move.IsCapture)
-            return;
+        var eval = RelativeEvaluate(board);
 
-        if (_killerMoves[ply, 0] != move)
+        if (qDepth > MaxQuiescenceDepth)
+            return eval;
+        
+        if (eval >= beta)
+            return beta;
+        if (eval > alpha)
+            alpha = eval;
+        
+        Span<Move> moves = stackalloc Move[128];
+        board.GetLegalMovesNonAlloc(ref moves, true);
+        OrderCaptures(moves, 0, moves.Length);
+
+        foreach (var move in moves)
         {
-            _killerMoves[ply, 1] = _killerMoves[ply, 0];
-            _killerMoves[ply, 0] = move;
+            board.MakeMove(move);
+            var score = -Quiescence(board, -beta, -alpha, qDepth + 1);
+            board.UndoMove(move);
+
+            if (score >= beta)
+                return beta;
+            if (score > alpha)
+                alpha = score;
         }
 
-        var side = isWhiteToPlay ? 0 : 1;
-        _history[side, move.StartSquare.Index, move.TargetSquare.Index] += depth * depth;
+        return alpha;
     }
     
     private void OrderCaptures(Span<Move> captures, int start, int end)
@@ -421,11 +376,83 @@ public class EthanBot : IChessBot
         }
     }
     
+    private (ulong zKey, int ttIndex, TTEntry entry) GetZobrist(Board board)
+    {
+        var zKey = board.ZobristKey;
+        var ttIndex = (int)(zKey & (TTSize - 1));
+        var entry = _tt[ttIndex];
+        return (zKey, ttIndex, entry);
+    }
+    
+    private static bool HasNonPawnMaterial(Board board)
+    {
+        var white = board.IsWhiteToMove;
+
+        // Knights, bishops, rooks, queens
+        return
+            board.GetPieceBitboard(PieceType.Knight, white) != 0 ||
+            board.GetPieceBitboard(PieceType.Bishop, white) != 0 ||
+            board.GetPieceBitboard(PieceType.Rook,   white) != 0 ||
+            board.GetPieceBitboard(PieceType.Queen,  white) != 0;
+    }
+
+    // **** EVALUATE ****
     // Piece values: null, pawn, knight, bishop, rook, queen
     private readonly int[] _pieceValues = [0, 100, 320, 330, 500, 900, 0];
     private readonly int[] _pieceValuesEndgame = [0, 120, 310, 330, 500, 900, 0];
     private readonly int[] _phaseValue = [0,   0,   1,   1,   2,   4, 0];
     
+    private int RelativeEvaluate(Board board)
+    {
+        var eval = EvaluateBoard(board);
+
+        return board.IsWhiteToMove ? eval : -eval;
+    }
+
+    private int EvaluateBoard(Board board)
+    {
+        if (board.IsInStalemate())
+            return 0;
+        
+        if (board.IsInCheckmate())
+            return board.IsWhiteToMove 
+                ? MinValue + board.PlyCount 
+                : MaxValue - board.PlyCount;
+     
+        var middleGameEval = 0;
+        var endGameEval = 0;
+        var phase = ComputePhase(board);
+
+        EvaluateMaterial(board, ref middleGameEval, ref endGameEval);
+        EvaluatePieceSquares(board, ref middleGameEval, ref endGameEval);
+
+        return (middleGameEval * phase + endGameEval * (24 - phase)) / 24;
+    }
+
+    private void EvaluatePieceSquares(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        throw new NotImplementedException();
+    }
+
+    private void EvaluateMaterial(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        for (var p = 0; p < 6; p++)
+        {
+            middleGameEval += MaterialWeight((PieceType)p, true, board, _pieceValues) -
+                              MaterialWeight((PieceType)p, false, board, _pieceValues);
+            
+            endGameEval += MaterialWeight((PieceType)p, true, board, _pieceValuesEndgame) -
+                           MaterialWeight((PieceType)p, false, board, _pieceValuesEndgame);
+        }
+    }
+    
+    private static int MaterialWeight(PieceType pieceType, bool isWhite, Board board, int[] pieceValues)
+    {
+        var bitboard = board.GetPieceBitboard(pieceType, isWhite);
+        return CountSetBits(bitboard) * pieceValues[(int)pieceType];
+    }
+
+    // Calculates the phase of the game from 24 -> start/middle game, to 0 -> endgame
     private int ComputePhase(Board board)
     {
         var phase = 0;
@@ -439,46 +466,13 @@ public class EthanBot : IChessBot
         return Math.Min(phase, 24);
     }
     
-    private int MaterialWeight(PieceType pieceType, bool isWhite, Board board, int[] pieceValues)
-    {
-        var bitboard = board.GetPieceBitboard(pieceType, isWhite);
-        return CountSetBits(bitboard) * pieceValues[(int)pieceType];
-    }
-    
+    // How "worth it" it is to take a piece (pawn taking a queen > queen taking a pawn)
     private int CaptureScore(Move move)
     {
         return _pieceValues[(int)move.CapturePieceType] * 10
                - _pieceValues[(int)move.MovePieceType];
     }
-    
-    private bool HasNonPawnMaterial(Board board)
-    {
-        var white = board.IsWhiteToMove;
 
-        // Knights, bishops, rooks, queens
-        return
-            board.GetPieceBitboard(PieceType.Knight, white) != 0 ||
-            board.GetPieceBitboard(PieceType.Bishop, white) != 0 ||
-            board.GetPieceBitboard(PieceType.Rook,   white) != 0 ||
-            board.GetPieceBitboard(PieceType.Queen,  white) != 0;
-    }
-
-
-    private (ulong zKey, int ttIndex, TTEntry entry) GetZobrist(Board board)
-    {
-        var zKey = board.ZobristKey;
-        var ttIndex = (int)(zKey & (TTSize - 1));
-        var entry = _tt[ttIndex];
-        return (zKey, ttIndex, entry);
-    }
-    
-    private static int CountSetBits(ulong n)
-    {
-        return BitOperations.PopCount(n);
-    }
-    
-    private static void Swap(ref Move a, ref Move b)
-    {
-        (a, b) = (b, a);
-    }
+    private static int CountSetBits(ulong n) => BitOperations.PopCount(n);
+    private static void Swap(ref Move a, ref Move b) => (a, b) = (b, a);
 }
