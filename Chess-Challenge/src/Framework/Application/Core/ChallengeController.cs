@@ -2,6 +2,7 @@
 using ChessChallenge.Example;
 using Raylib_cs;
 using System;
+using System.IO;
 using System.Linq;
 using System.Runtime.ExceptionServices;
 using System.Text;
@@ -79,10 +80,11 @@ namespace ChessChallenge.Application
 
         public void StartNewGame(PlayerType whiteType, PlayerType blackType)
         {
+            EvaluationBar.Reset();
             // End any ongoing game
             EndGame(GameResult.DrawByArbiter, log: false, autoStartNextBotMatch: false);
             gameID = rng.Next();
-
+            
             // Stop prev task and create a new one
             if (RunBotsOnSeparateThread)
             {
@@ -279,6 +281,13 @@ namespace ChessChallenge.Application
                 string pgn = PGNCreator.CreatePGN(board, result, GetPlayerName(PlayerWhite), GetPlayerName(PlayerBlack));
                 pgns.AppendLine(pgn);
 
+                const string directory = "PGNs";
+                if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
+
+                var fileName = $"{directory}/Game_{DateTime.Now:yyyyMMdd_HHmmss}.pgn";
+                File.WriteAllText(fileName, pgns.ToString());
+                Log($"Saved game to {fileName}", false, ConsoleColor.Green);
+
                 // If 2 bots playing each other, start next game automatically.
                 if (PlayerWhite.IsBot && PlayerBlack.IsBot)
                 {
@@ -374,6 +383,8 @@ namespace ChessChallenge.Application
         public void Draw()
         {
             boardUI.Draw();
+            EvaluationBar.Draw(new API.Board(board), BoardUI.BoardRect);
+            
             string nameW = GetPlayerName(PlayerWhite);
             string nameB = GetPlayerName(PlayerBlack);
             boardUI.DrawPlayerNames(nameW, nameB, PlayerWhite.TimeRemainingMs, PlayerBlack.TimeRemainingMs, isPlaying);

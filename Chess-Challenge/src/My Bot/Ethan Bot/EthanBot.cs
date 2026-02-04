@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Numerics;
 using ChessChallenge.API;
+using ChessChallenge.Application;
 
 namespace Chess_Challenge.My_Bot.Ethan_Bot;
 
@@ -12,8 +13,8 @@ public class EthanBot : IChessBot
     private const int MaxQuiescenceDepth = 15;
     private const int AspirationWindow = 50;
 
-    private const int MinValue = -100_000_000;
-    private const int MaxValue =  100_000_000;
+    private const int MinValue = -1_000_000_000;
+    private const int MaxValue =  1_000_000_000;
 
     private Move _previousBestMove = Move.NullMove;
     
@@ -33,14 +34,14 @@ public class EthanBot : IChessBot
     }
     
     // Killer moves, 2 per depth
-    private readonly Move[,] _killerMoves = new Move[256, 2];
+    private readonly Move[,] _killerMoves = new Move[512, 2];
     
     // History Heuristic
     private readonly int[,,] _history = new int[2, 64, 64];
     
     public Move Think(Board board, Timer timer)
     {
-        var timeLimit = timer.MillisecondsRemaining / 40;
+        var timeLimit = ComputeTimeLimit(board, timer);
 
         // Decay History
         if (board.PlyCount % 6 == 0 && board.PlyCount > 1) 
@@ -111,7 +112,7 @@ public class EthanBot : IChessBot
                         break;
 
                     board.MakeMove(move);
-                    var score = -Search(depth, board, MinValue, MaxValue);
+                    var score = -Search(depth - 1, board, MinValue, MaxValue);
                     board.UndoMove(move);
 
                     if (score <= maxScore) continue;
@@ -125,9 +126,30 @@ public class EthanBot : IChessBot
             _previousBestMove = bestMove;
         }
 
-        Console.WriteLine("Reached a depth of " + d);
+        ConsoleHelper.Log("Reached a depth of " + d);
         
         return bestMove;
+    }
+
+    // Via ChatGPT
+    private int ComputeTimeLimit(Board board, Timer timer)
+    {
+        var movesLeft = board.PlyCount < 40 ? 40 - board.PlyCount / 2 : 20; // Estimate
+        var baseTime = timer.MillisecondsRemaining / (double) movesLeft;
+        
+        // Scale by complexity: more captures -> spend more time
+        Span<Move> moves = stackalloc Move[128];
+        board.GetLegalMovesNonAlloc(ref moves);
+        var moveCount = moves.Length;
+        
+        var complexityFactor = Math.Min(2.0, 1.0 + (moveCount / 20.0)); // 1–2x
+
+        // Scale by phase: endgame moves require less time generally
+        var phase = ComputePhase(board) / 24.0; // 1=middlegame, 0=endgame
+        var phaseFactor = 0.8 + 0.4 * phase; // 0.8–1.2x
+
+        var timeLimit = (int)(baseTime * complexityFactor * phaseFactor);
+        return Math.Max(5, timeLimit); // at least 5ms per depth
     }
 
     // **** SEARCH ****
@@ -192,17 +214,28 @@ public class EthanBot : IChessBot
             var score = 0;
             var nextDepth = depth - 1;
 
-            var reduce = moveIndex >= 4 && depth >= 3 && !board.IsInCheck() && !move.IsCapture;
+            var reduce = moveIndex >= 4 && depth >= 4 && !board.IsInCheck() && !move.IsCapture;
 
+            var reduction = 0;
             if (reduce)
             {
-                score = -Search(nextDepth - 1, board, -alpha - 1, -alpha);
+                // Dynamic formula based on online sources, smth like stockfish
+                reduction = 1 + (depth * moveIndex) / 16;
+                reduction = Math.Min(reduction, depth - 1); // Prevent reducing to 0
+
+                var historyScore = _history[board.IsWhiteToMove ? 0 : 1, move.StartSquare.Index, move.TargetSquare.Index];
+                if (move == _killerMoves[ply, 0] || move == _killerMoves[ply, 1] || historyScore > 200 + 5 * depth)
+                    reduction = 0; // Dont reduce good history moves or killer moves
+            }
+            
+            if (reduction > 0)
+            {
+                score = -Search(nextDepth - 2, board, -alpha - 1, -alpha);
 
                 if (score > alpha)
-                    reduce = false;
+                    score = -Search(nextDepth, board, -beta, -beta);
             }
-
-            if (!reduce)
+            else
             {
                 score = -Search(nextDepth, board, -beta, -alpha);
             }
@@ -320,9 +353,9 @@ public class EthanBot : IChessBot
         }
     }
 
-    private int Quiescence(Board board, int alpha, int beta, int qDepth = 1)
+    private static int Quiescence(Board board, int alpha, int beta, int qDepth = 1)
     {
-        var eval = RelativeEvaluate(board);
+        var eval = EvaluateRelative(board);
 
         if (qDepth > MaxQuiescenceDepth)
             return eval;
@@ -400,16 +433,42 @@ public class EthanBot : IChessBot
     // Piece values: null, pawn, knight, bishop, rook, queen
     private static readonly int[] PieceValues = [0, 100, 320, 330, 500, 900, 0];
     private static readonly int[] PieceValuesEndgame = [0, 120, 310, 330, 500, 900, 0];
-    private static readonly int[] PhaseValue = [0,   0,   1,   1,   2,   4, 0];
+    private static readonly int[] PhaseValue = [0, 0, 1, 1, 2, 4, 0];
+
+    private static readonly int[] MobilityMiddlegame = [0, 0, 4, 5, 2, 1, 0];
+    private static readonly int[] MobilityEndgame = [0, 0, 2, 3, 2, 1, 0];
+
+    private static readonly int[] PassedPawnsMiddlegame = [0, 0, 10, 20, 35, 60, 100, 0];
+    private static readonly int[] PassedPawnsEndgame = [0, 0, 20, 40, 70, 120, 200, 0];
+
+    private static readonly ulong[] FileMasks =
+    [
+        0x0101010101010101UL,
+        0x0202020202020202UL,
+        0x0404040404040404UL,
+        0x0808080808080808UL,
+        0x1010101010101010UL,
+        0x2020202020202020UL,
+        0x4040404040404040UL,
+        0x8080808080808080UL
+    ];
+
+    private static readonly int[] KingSafetyPenaltyMiddlegame = [0, 10, 30, 50];
+    private static readonly int[] KingSafetyPenaltyEndgame = [0, 5, 15, 25];
+
+    public static float DisplayEval(Board board)
+    {
+        return (board.IsWhiteToMove ? 1 : -1) * Quiescence(board, MinValue, MaxValue) / 100.0f;
+    }
     
-    private int RelativeEvaluate(Board board)
+    private static int EvaluateRelative(Board board)
     {
         var eval = EvaluateBoard(board);
 
         return board.IsWhiteToMove ? eval : -eval;
     }
 
-    private int EvaluateBoard(Board board)
+    private static int EvaluateBoard(Board board)
     {
         if (board.IsInStalemate())
             return 0;
@@ -425,6 +484,11 @@ public class EthanBot : IChessBot
 
         EvaluateMaterial(board, ref middleGameEval, ref endGameEval);
         EvaluatePieceSquares(board, ref middleGameEval, ref endGameEval);
+        EvaluateKingSafety(board, ref middleGameEval, ref endGameEval);
+        EvaluateDoubleBishop(board, ref middleGameEval, ref endGameEval);
+        EvaluateMobility(board, ref middleGameEval, ref endGameEval);
+        EvaluatePassedPawns(board, ref middleGameEval, ref endGameEval);
+        EvaluateTempo(board, ref middleGameEval, ref endGameEval);
 
         return (middleGameEval * phase + endGameEval * (24 - phase)) / 24;
     }
@@ -478,6 +542,161 @@ public class EthanBot : IChessBot
                 endGameEval -= PieceSquareTables.GetSquare(piece, square, true);
             }
         }
+    }
+
+    private static void EvaluateKingSafety(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        EvaluateKingSafetySide(board, true, ref middleGameEval, ref endGameEval);
+        EvaluateKingSafetySide(board, false, ref middleGameEval, ref endGameEval);
+    }
+
+    private static void EvaluateKingSafetySide(Board board, bool isWhite, ref int middleGameEval, ref int endGameEval)
+    {
+        var kingBoard = board.GetPieceBitboard(PieceType.King, isWhite);
+        if (kingBoard == 0) return; // Should never happen
+
+        var mgPenalty = 0;
+        var egPenalty = 0;
+        
+        var square =  BitOperations.TrailingZeroCount(kingBoard);
+
+        var kingBox = KingBox(square);
+        var enemyPieces = isWhite ? board.BlackPiecesBitboard :  board.WhitePiecesBitboard;
+        
+        var attackers = CountSetBits(enemyPieces & kingBox);
+        mgPenalty +=  attackers * 10;
+        egPenalty +=  attackers * 20;
+
+        var file = square & 7;
+        var rank = square >> 3;
+        
+        var pawnMask = FileMasks[file];
+        if (file > 0) pawnMask |= FileMasks[file - 1];
+        if (file < 7) pawnMask |= FileMasks[file + 1];
+        
+        pawnMask = isWhite 
+            ? pawnMask << ((rank + 1) * 8) 
+            :  pawnMask >> ((8 - rank) * 8);
+        
+        var pawns = CountSetBits(board.GetPieceBitboard(PieceType.Pawn, isWhite) & pawnMask);
+        var missingPawns = 3 - pawns;
+
+        mgPenalty += KingSafetyPenaltyMiddlegame[Math.Clamp(missingPawns, 0, 3)];
+        egPenalty += KingSafetyPenaltyEndgame[Math.Clamp(missingPawns, 0, 3)];
+
+        middleGameEval += mgPenalty * (isWhite ? -1 : 1);
+        endGameEval += egPenalty * (isWhite ? -1 : 1);
+    }
+    
+    // Via ChatGPT
+    private static ulong KingBox(int square)
+    {
+        var rank = square >> 3;
+        var file = square & 7;
+
+        var bb = 0UL;
+        for (var r = Math.Max(0, rank - 1); r <= Math.Min(7, rank + 1); r++)
+        for (var f = Math.Max(0, file - 1); f <= Math.Min(7, file + 1); f++)
+            bb |= 1UL << (r * 8 + f);
+
+        return bb;
+    }
+
+    private static void EvaluateDoubleBishop(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        if (CountSetBits(board.GetPieceBitboard(PieceType.Bishop, true)) >= 2)
+        {
+            middleGameEval += 30;
+            endGameEval += 50;
+        }
+
+        if (CountSetBits(board.GetPieceBitboard(PieceType.Bishop, false)) >= 2)
+        {
+            middleGameEval -= 30;
+            endGameEval -= 50;
+        }
+    }
+    
+    private static void EvaluateMobility(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        if (board.IsInCheck()) return;
+        
+        Span<Move> moves = stackalloc Move[128];
+        board.GetLegalMovesNonAlloc(ref moves);
+        var isWhite = board.IsWhiteToMove;
+
+        EvaluateMobilitySide(moves, isWhite, ref middleGameEval, ref endGameEval);
+
+        board.TrySkipTurn();
+        moves = stackalloc Move[128];
+        board.GetLegalMovesNonAlloc(ref moves);
+        
+        EvaluateMobilitySide(moves, !isWhite, ref middleGameEval, ref endGameEval);
+        
+        board.UndoSkipTurn();
+    }
+
+    private static void EvaluateMobilitySide(Span<Move> moves, bool isWhite, ref int middleGameEval, ref int endGameEval)
+    {
+        foreach (var move in moves)
+        {
+            var piece = (int) move.MovePieceType;
+
+            // Do NOT evaluate pawn or king mobility
+            if (piece is < 2 or > 5) continue;
+
+            middleGameEval += MobilityMiddlegame[piece] * (isWhite ? 1 : -1);
+            endGameEval += MobilityEndgame[piece] * (isWhite ? 1 : -1);
+        }
+    }
+
+    private static void EvaluatePassedPawns(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        EvaluatePassedPawnsSide(board, true, ref middleGameEval, ref endGameEval);
+        EvaluatePassedPawnsSide(board, false, ref middleGameEval, ref endGameEval);
+    }
+
+    private static void EvaluatePassedPawnsSide(Board board, bool isWhite, ref int middleGameEval, ref int endGameEval)
+    {
+        var bitboard = board.GetPieceBitboard(PieceType.Pawn, isWhite);
+        var enemyBitboard = board.GetPieceBitboard(PieceType.Pawn, !isWhite);
+
+        while (bitboard != 0)
+        {
+            var square = BitOperations.TrailingZeroCount(bitboard);
+            bitboard &= bitboard - 1;
+
+            var file = square & 7;
+            var rank = square >> 3;
+
+            var pawnRank = isWhite ? rank + 1 : 8 - rank;
+            
+            if (!IsPassedPawn(enemyBitboard, rank, file, isWhite))
+                continue;
+            
+            middleGameEval += PassedPawnsMiddlegame[pawnRank] * (isWhite ? 1 : -1);
+            endGameEval += PassedPawnsEndgame[pawnRank] * (isWhite ? 1 : -1);
+        }
+    }
+
+    private static bool IsPassedPawn(ulong enemyBitboard, int rank, int file, bool isWhite)
+    {
+        var mask = FileMasks[file];
+        if (file > 0) mask |= FileMasks[file - 1];
+        if (file < 7) mask |= FileMasks[file + 1];
+        
+        mask = isWhite 
+            ? mask << ((rank + 1) * 8) 
+            :  mask >> ((8 - rank) * 8);
+
+        return (enemyBitboard & mask) == 0;
+    }
+
+    private static void EvaluateTempo(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        // Minor bonus to the current turn as a "tempo bonus"
+        middleGameEval += board.IsWhiteToMove ? 12 : -12;
+        endGameEval += board.IsWhiteToMove ? 4 : -4;
     }
 
     // Calculates the phase of the game from 24 -> start/middle game, to 0 -> endgame

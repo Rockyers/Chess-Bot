@@ -11,6 +11,7 @@ namespace ChessChallenge.Application
 {
     public class BoardUI
     {
+        public static Rectangle BoardRect => new Rectangle(-squareSize * 4, -squareSize * 4, squareSize * 8, squareSize * 8);
       
         // Board settings
         const int squareSize = 100;
