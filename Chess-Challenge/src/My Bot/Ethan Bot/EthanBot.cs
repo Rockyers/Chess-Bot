@@ -186,10 +186,15 @@ public class EthanBot : IChessBot
         }
         
         // NULL MOVE PRUNING
-        if (!board.IsInCheck() && depth >= 4 && ComputePhase(board) > 8 && board.GetPieceBitboard(PieceType.Queen, isWhite) != 0 && board.GetPieceBitboard(PieceType.Pawn, isWhite) != 0)
+        if (!board.IsInCheck() && 
+            depth >= 4 && 
+            ComputePhase(board) > 14 && 
+            (board.GetPieceBitboard(PieceType.Queen, isWhite) != 0 || board.GetPieceBitboard(PieceType.Rook, isWhite) != 0) &&
+            CountSetBits(board.GetPieceBitboard(PieceType.Pawn, isWhite)) > 3)
         {
             board.TrySkipTurn();
-            var score = -Search(depth - 3, board, -beta, -beta + 1);
+            var r = depth > 6 ? 3 : 2;
+            var score = -Search(depth - r, board, -beta, -beta + 1);
             board.UndoSkipTurn();
 
             if (score >= beta)
@@ -373,6 +378,8 @@ public class EthanBot : IChessBot
 
         foreach (var move in moves)
         {
+            if (CaptureScore(move) < 0) continue;
+            
             board.MakeMove(move);
             var score = -Quiescence(board, -beta, -alpha, qDepth + 1);
             board.UndoMove(move);
@@ -428,7 +435,7 @@ public class EthanBot : IChessBot
     private static readonly int[] MobilityMiddlegame = [0, 0, 4, 5, 2, 1, 0];
     private static readonly int[] MobilityEndgame = [0, 0, 2, 3, 2, 1, 0];
 
-    private static readonly int[] PassedPawnsMiddlegame = [0, 0, 10, 20, 35, 60, 100, 0];
+    private static readonly int[] PassedPawnsMiddlegame = [0, 0, 5, 10, 20, 35, 60, 0];
     private static readonly int[] PassedPawnsEndgame = [0, 0, 20, 40, 70, 120, 200, 0];
 
     private static readonly ulong[] FileMasks =
@@ -474,10 +481,14 @@ public class EthanBot : IChessBot
 
         EvaluateMaterial(board, ref middleGameEval, ref endGameEval);
         EvaluatePieceSquares(board, ref middleGameEval, ref endGameEval);
-        EvaluateKingSafety(board, ref middleGameEval, ref endGameEval);
+        if (phase > 7) EvaluateKingSafety(board, ref middleGameEval, ref endGameEval);
         EvaluateDoubleBishop(board, ref middleGameEval, ref endGameEval);
-        EvaluateMobility(board, ref middleGameEval, ref endGameEval);
-        EvaluatePawnStructure(board, ref middleGameEval, ref endGameEval);
+        if (phase > 5) EvaluateMobility(board, ref middleGameEval, ref endGameEval);
+        
+        // Expensive so reserve for opening/later in the game after pieces are gone
+        if (board.PlyCount < 4 || phase < 22)
+            EvaluatePawnStructure(board, ref middleGameEval, ref endGameEval);
+        
         EvaluatePassedPawns(board, ref middleGameEval, ref endGameEval);
         EvaluateTempo(board, ref middleGameEval, ref endGameEval);
 
@@ -552,11 +563,15 @@ public class EthanBot : IChessBot
         var square =  BitOperations.TrailingZeroCount(kingBoard);
 
         var kingBox = KingBox(square);
-        var enemyPieces = isWhite ? board.BlackPiecesBitboard :  board.WhitePiecesBitboard;
+        
+        var enemyPieces = board.GetPieceBitboard(PieceType.Queen, !isWhite) | 
+                              board.GetPieceBitboard(PieceType.Rook, !isWhite) | 
+                              board.GetPieceBitboard(PieceType.Bishop, !isWhite) | 
+                              board.GetPieceBitboard(PieceType.Knight, !isWhite);
         
         var attackers = CountSetBits(enemyPieces & kingBox);
-        mgPenalty +=  attackers * 10;
-        egPenalty +=  attackers * 20;
+        mgPenalty +=  attackers * 15;
+        egPenalty +=  attackers * 5;
 
         var file = square & 7;
         var rank = square >> 3;
@@ -567,7 +582,7 @@ public class EthanBot : IChessBot
         
         pawnMask = isWhite 
             ? pawnMask << ((rank + 1) * 8) 
-            :  pawnMask >> ((8 - rank) * 8);
+            :  pawnMask >> ((7 - rank) * 8);
         
         var pawns = CountSetBits(board.GetPieceBitboard(PieceType.Pawn, isWhite) & pawnMask);
         var missingPawns = 3 - pawns;
@@ -610,25 +625,15 @@ public class EthanBot : IChessBot
     
     private static void EvaluateMobility(Board board, ref int middleGameEval, ref int endGameEval)
     {
-        if (board.IsInCheck()) return;
-        
         Span<Move> moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves);
-        var isWhite = board.IsWhiteToMove;
-
-        EvaluateMobility(moves, isWhite, ref middleGameEval, ref endGameEval);
-
-        board.TrySkipTurn();
-        moves = stackalloc Move[128];
-        board.GetLegalMovesNonAlloc(ref moves);
-        
-        EvaluateMobility(moves, !isWhite, ref middleGameEval, ref endGameEval);
-        
-        board.UndoSkipTurn();
+        EvaluateMobility(moves, board.IsWhiteToMove, ref middleGameEval, ref endGameEval);
     }
 
     private static void EvaluateMobility(Span<Move> moves, bool isWhite, ref int middleGameEval, ref int endGameEval)
     {
+        Span<int> count = stackalloc int[7];
+        
         foreach (var move in moves)
         {
             var piece = (int) move.MovePieceType;
@@ -636,8 +641,13 @@ public class EthanBot : IChessBot
             // Do NOT evaluate pawn or king mobility
             if (piece is < 2 or > 5) continue;
 
-            middleGameEval += MobilityMiddlegame[piece] * (isWhite ? 1 : -1);
-            endGameEval += MobilityEndgame[piece] * (isWhite ? 1 : -1);
+            count[piece]++;
+        }
+
+        for (var piece = 2; piece < 6; piece++)
+        { 
+            middleGameEval += count[piece] * MobilityMiddlegame[piece] * (isWhite ? 1 : -1);
+            endGameEval += count[piece] * MobilityEndgame[piece] * (isWhite ? 1 : -1);
         }
     }
 
@@ -676,16 +686,25 @@ public class EthanBot : IChessBot
 
             // Isolated pawns
             var neighborMask = NeighborFileMask(file);
-            if ((pawns & neighborMask) == 0 && pawnsOnFile != 0)
-                score -= _isolatedPawnPenalty;
+            if ((pawns & neighborMask) == 0 && count > 0)
+                score -= _isolatedPawnPenalty * count;
 
             if (pawnsOnFile == 0) continue;
             
             // Backward pawns
-            var frontMask = FrontMask(pawns, isWhite);
-            var attackingMask = frontMask & (opponentPawns * NeighborFileMask(file));
-            var friendlyMask = pawns & NeighborFileMask(file) & ~(pawnsOnFile);
-            if (attackingMask != 0 && friendlyMask == 0)
+            var frontMask = FileMasks[file];
+            frontMask = isWhite
+                ? frontMask << 8
+                : frontMask >> 8;
+
+            frontMask |= isWhite ? frontMask << 8 : frontMask >> 8;
+            frontMask |= isWhite ? frontMask << 16 : frontMask >> 16;
+            frontMask |= isWhite ? frontMask << 32 : frontMask >> 32;
+
+            var enemyAttacks = frontMask & opponentPawns & NeighborFileMask(file);
+            var friendlySupport = pawns & NeighborFileMask(file);
+
+            if (enemyAttacks != 0 && friendlySupport == 0)
                 score -= _backwardsPawnPenalty * count;
             
             // Pawn chains
@@ -737,10 +756,18 @@ public class EthanBot : IChessBot
             var file = square & 7;
             var rank = square >> 3;
 
-            var pawnRank = isWhite ? rank + 1 : 8 - rank;
+            var pawnRank = isWhite ? rank + 1 : 8 - (rank + 1);
             
             if (!IsPassedPawn(enemyBitboard, rank, file, isWhite))
                 continue;
+            
+            var enemyKing = board.GetPieceBitboard(PieceType.King, !isWhite);
+            var enemyKingSq = BitOperations.TrailingZeroCount(enemyKing);
+
+            var dist = Math.Abs((enemyKingSq & 7) - file) +
+                       Math.Abs((enemyKingSq >> 3) - rank);
+
+            endGameEval += (7 - dist) * (isWhite ? 2 : -2);
             
             middleGameEval += PassedPawnsMiddlegame[pawnRank] * (isWhite ? 1 : -1);
             endGameEval += PassedPawnsEndgame[pawnRank] * (isWhite ? 1 : -1);
@@ -755,7 +782,7 @@ public class EthanBot : IChessBot
         
         mask = isWhite 
             ? mask << ((rank + 1) * 8) 
-            :  mask >> ((8 - rank) * 8);
+            :  mask >> ((7 - rank) * 8);
 
         return (enemyBitboard & mask) == 0;
     }
@@ -772,7 +799,7 @@ public class EthanBot : IChessBot
     {
         // Minor bonus to the current turn as a "tempo bonus"
         middleGameEval += board.IsWhiteToMove ? 12 : -12;
-        endGameEval += board.IsWhiteToMove ? 4 : -4;
+        endGameEval += board.IsWhiteToMove ? 1 : -1;
     }
 
     // Calculates the phase of the game from 24 -> start/middle game, to 0 -> endgame
