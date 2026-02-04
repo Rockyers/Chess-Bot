@@ -2,6 +2,7 @@
 using System.Numerics;
 using ChessChallenge.API;
 using ChessChallenge.Application;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Chess_Challenge.My_Bot.Ethan_Bot;
 
@@ -94,7 +95,7 @@ public class EthanBot : IChessBot
                     break;
             
                 board.MakeMove(move);
-                var score = -Search(depth, board, alpha, beta);
+                var score = -Search(depth - 1, board, alpha, beta);
                 board.UndoMove(move);
 
                 if (score <= maxScore) continue;
@@ -132,7 +133,7 @@ public class EthanBot : IChessBot
     }
 
     // Via ChatGPT
-    private int ComputeTimeLimit(Board board, Timer timer)
+    private static int ComputeTimeLimit(Board board, Timer timer)
     {
         var movesLeft = board.PlyCount < 40 ? 40 - board.PlyCount / 2 : 20; // Estimate
         var baseTime = timer.MillisecondsRemaining / (double) movesLeft;
@@ -156,6 +157,7 @@ public class EthanBot : IChessBot
     private int Search(int depth, Board board, int alpha, int beta)
     {
         var originalAlpha = alpha;
+        var isWhite = board.IsWhiteToMove;
         
         if (board.IsDraw())
             return 0;
@@ -184,7 +186,7 @@ public class EthanBot : IChessBot
         }
         
         // NULL MOVE PRUNING
-        if (!board.IsInCheck() && depth > 3 && HasNonPawnMaterial(board))
+        if (!board.IsInCheck() && depth >= 4 && ComputePhase(board) > 8 && board.GetPieceBitboard(PieceType.Queen, isWhite) != 0 && board.GetPieceBitboard(PieceType.Pawn, isWhite) != 0)
         {
             board.TrySkipTurn();
             var score = -Search(depth - 3, board, -beta, -beta + 1);
@@ -223,17 +225,17 @@ public class EthanBot : IChessBot
                 reduction = 1 + (depth * moveIndex) / 16;
                 reduction = Math.Min(reduction, depth - 1); // Prevent reducing to 0
 
-                var historyScore = _history[board.IsWhiteToMove ? 0 : 1, move.StartSquare.Index, move.TargetSquare.Index];
+                var historyScore = _history[isWhite ? 0 : 1, move.StartSquare.Index, move.TargetSquare.Index];
                 if (move == _killerMoves[ply, 0] || move == _killerMoves[ply, 1] || historyScore > 200 + 5 * depth)
                     reduction = 0; // Dont reduce good history moves or killer moves
             }
             
             if (reduction > 0)
             {
-                score = -Search(nextDepth - 2, board, -alpha - 1, -alpha);
+                score = -Search(nextDepth - reduction, board, -alpha - 1, -alpha);
 
                 if (score > alpha)
-                    score = -Search(nextDepth, board, -beta, -beta);
+                    score = -Search(nextDepth, board, -beta, -alpha);
             }
             else
             {
@@ -253,7 +255,7 @@ public class EthanBot : IChessBot
 
             if (alpha >= beta)
             {
-                UpdateQuietCutoff(move, ply, board.IsWhiteToMove, depth);
+                UpdateQuietCutoff(move, ply, isWhite, depth);
                 break;
             }
 
@@ -416,18 +418,6 @@ public class EthanBot : IChessBot
         var entry = _tt[ttIndex];
         return (zKey, ttIndex, entry);
     }
-    
-    private static bool HasNonPawnMaterial(Board board)
-    {
-        var white = board.IsWhiteToMove;
-
-        // Knights, bishops, rooks, queens
-        return
-            board.GetPieceBitboard(PieceType.Knight, white) != 0 ||
-            board.GetPieceBitboard(PieceType.Bishop, white) != 0 ||
-            board.GetPieceBitboard(PieceType.Rook,   white) != 0 ||
-            board.GetPieceBitboard(PieceType.Queen,  white) != 0;
-    }
 
     // **** EVALUATION ****
     // Piece values: null, pawn, knight, bishop, rook, queen
@@ -487,6 +477,7 @@ public class EthanBot : IChessBot
         EvaluateKingSafety(board, ref middleGameEval, ref endGameEval);
         EvaluateDoubleBishop(board, ref middleGameEval, ref endGameEval);
         EvaluateMobility(board, ref middleGameEval, ref endGameEval);
+        EvaluatePawnStructure(board, ref middleGameEval, ref endGameEval);
         EvaluatePassedPawns(board, ref middleGameEval, ref endGameEval);
         EvaluateTempo(board, ref middleGameEval, ref endGameEval);
 
@@ -625,18 +616,18 @@ public class EthanBot : IChessBot
         board.GetLegalMovesNonAlloc(ref moves);
         var isWhite = board.IsWhiteToMove;
 
-        EvaluateMobilitySide(moves, isWhite, ref middleGameEval, ref endGameEval);
+        EvaluateMobility(moves, isWhite, ref middleGameEval, ref endGameEval);
 
         board.TrySkipTurn();
         moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves);
         
-        EvaluateMobilitySide(moves, !isWhite, ref middleGameEval, ref endGameEval);
+        EvaluateMobility(moves, !isWhite, ref middleGameEval, ref endGameEval);
         
         board.UndoSkipTurn();
     }
 
-    private static void EvaluateMobilitySide(Span<Move> moves, bool isWhite, ref int middleGameEval, ref int endGameEval)
+    private static void EvaluateMobility(Span<Move> moves, bool isWhite, ref int middleGameEval, ref int endGameEval)
     {
         foreach (var move in moves)
         {
@@ -650,13 +641,90 @@ public class EthanBot : IChessBot
         }
     }
 
-    private static void EvaluatePassedPawns(Board board, ref int middleGameEval, ref int endGameEval)
+    private static void EvaluatePawnStructure(Board board, ref int middleGameEval, ref int endGameEval)
     {
-        EvaluatePassedPawnsSide(board, true, ref middleGameEval, ref endGameEval);
-        EvaluatePassedPawnsSide(board, false, ref middleGameEval, ref endGameEval);
+        var whitePawns = board.GetPieceBitboard(PieceType.Pawn, true);
+        var blackPawns = board.GetPieceBitboard(PieceType.Pawn, false);
+        
+        var whiteScore = EvaluatePawnStructure(whitePawns, blackPawns, true);
+        var blackScore = EvaluatePawnStructure(blackPawns, whitePawns, false);
+
+        middleGameEval += whiteScore;
+        middleGameEval -= blackScore;
+        
+        endGameEval += whiteScore / 2;
+        endGameEval -= blackScore / 2;
     }
 
-    private static void EvaluatePassedPawnsSide(Board board, bool isWhite, ref int middleGameEval, ref int endGameEval)
+    private static int _doubledPawnPenalty = 15;
+    private static int _isolatedPawnPenalty = 20;
+    private static int _backwardsPawnPenalty = 10;
+    private static int _pawnChainReward = 5;
+
+    private static int EvaluatePawnStructure(ulong pawns, ulong opponentPawns, bool isWhite)
+    {
+        var score = 0;
+
+        for (var file = 0; file < 8; file++)
+        {
+            var pawnsOnFile = pawns & FileMasks[file];
+            var count = CountSetBits(pawnsOnFile);
+
+            // Pawns doubled up
+            if (count > 1)
+                score -= _doubledPawnPenalty * (count - 1);
+
+            // Isolated pawns
+            var neighborMask = NeighborFileMask(file);
+            if ((pawns & neighborMask) == 0 && pawnsOnFile != 0)
+                score -= _isolatedPawnPenalty;
+
+            if (pawnsOnFile == 0) continue;
+            
+            // Backward pawns
+            var frontMask = FrontMask(pawns, isWhite);
+            var attackingMask = frontMask & (opponentPawns * NeighborFileMask(file));
+            var friendlyMask = pawns & NeighborFileMask(file) & ~(pawnsOnFile);
+            if (attackingMask != 0 && friendlyMask == 0)
+                score -= _backwardsPawnPenalty * count;
+            
+            // Pawn chains
+            var diagonalSupport = isWhite
+                ? (pawnsOnFile << 7 & pawns) | (pawnsOnFile << 9 & pawns) // pawns behind either diagonal
+                : (pawnsOnFile >> 7 & pawns) | (pawnsOnFile >> 9 & pawns);
+            score += _pawnChainReward * CountSetBits(diagonalSupport);
+        }
+
+        return score;
+    }
+
+    private static ulong FrontMask(ulong pawns, bool isWhite)
+    {
+        var mask = pawns;
+        
+        if (isWhite)
+        {
+            mask |= mask << 8;
+            mask |= mask << 16;
+            mask |= mask << 32;
+        }
+        else
+        {
+            mask |= mask >> 8;
+            mask |= mask >> 16;
+            mask |= mask >> 32;
+        }
+        
+        return mask;
+    }
+
+    private static void EvaluatePassedPawns(Board board, ref int middleGameEval, ref int endGameEval)
+    {
+        EvaluatePassedPawns(board, true, ref middleGameEval, ref endGameEval);
+        EvaluatePassedPawns(board, false, ref middleGameEval, ref endGameEval);
+    }
+
+    private static void EvaluatePassedPawns(Board board, bool isWhite, ref int middleGameEval, ref int endGameEval)
     {
         var bitboard = board.GetPieceBitboard(PieceType.Pawn, isWhite);
         var enemyBitboard = board.GetPieceBitboard(PieceType.Pawn, !isWhite);
@@ -690,6 +758,14 @@ public class EthanBot : IChessBot
             :  mask >> ((8 - rank) * 8);
 
         return (enemyBitboard & mask) == 0;
+    }
+
+    private static ulong NeighborFileMask(int file)
+    {
+        ulong mask = 0;
+        if (file > 0) mask |= FileMasks[file - 1];
+        if (file < 7) mask |= FileMasks[file + 1];
+        return mask;
     }
 
     private static void EvaluateTempo(Board board, ref int middleGameEval, ref int endGameEval)

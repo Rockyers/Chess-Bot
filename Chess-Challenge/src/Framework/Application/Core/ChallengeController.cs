@@ -278,14 +278,14 @@ namespace ChessChallenge.Application
                     Log("Game Over: " + result, false, ConsoleColor.Blue);
                 }
 
-                string pgn = PGNCreator.CreatePGN(board, result, GetPlayerName(PlayerWhite), GetPlayerName(PlayerBlack));
+                var pgn = PGNCreator.CreatePGN(board, result, GetPlayerName(PlayerWhite), GetPlayerName(PlayerBlack));
                 pgns.AppendLine(pgn);
 
                 const string directory = "PGNs";
                 if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
 
                 var fileName = $"{directory}/Game_{DateTime.Now:yyyyMMdd_HHmmss}.pgn";
-                File.WriteAllText(fileName, pgns.ToString());
+                File.WriteAllText(fileName, pgn);
                 Log($"Saved game to {fileName}", false, ConsoleColor.Green);
 
                 // If 2 bots playing each other, start next game automatically.
