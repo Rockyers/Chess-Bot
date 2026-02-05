@@ -51,7 +51,7 @@
 
   <ItemGroup>
     <Folder Include="src\Framework\Chess\" />
-    <Folder Include="src\My Bot\Ethan Bot\tablebases\" />
+    <Folder Include="src\My Bot\Ethan Bot\tablebase\" />
   </ItemGroup>
 
   <ItemGroup>
