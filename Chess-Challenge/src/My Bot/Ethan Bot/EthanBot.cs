@@ -12,7 +12,7 @@ public class EthanBot : IChessBot
     
     private const int MaximumDepth = 30;
     private const int MaxQuiescenceDepth = 15;
-    private const int AspirationWindow = 50;
+    private const int AspirationWindow = 80;
 
     private const int MinValue = -1_000_000_000;
     private const int MaxValue =  1_000_000_000;
@@ -42,8 +42,6 @@ public class EthanBot : IChessBot
     
     public Move Think(Board board, Timer timer)
     {
-        var timeLimit = ComputeTimeLimit(board, timer);
-
         // Decay History
         if (board.PlyCount % 6 == 0 && board.PlyCount > 1) 
         {
@@ -57,11 +55,12 @@ public class EthanBot : IChessBot
 
         Span<Move> moves = stackalloc Move[128];
         board.GetLegalMovesNonAlloc(ref moves);
-        OrderMoves(board, moves, entry, zKey);
+        
+        var timeLimit = ComputeTimeLimit(board, timer, moves);
         
         var bestMove = moves[0];
 
-        var d = 0;
+        var depthLog = 0;
         var lastScore = 0;
         
         for (var depth = 1; depth < MaximumDepth; depth++)
@@ -69,78 +68,76 @@ public class EthanBot : IChessBot
             if (timer.MillisecondsElapsedThisTurn >= timeLimit)
                 break;
             
-            d = depth;
-            
-            var alpha = Math.Max(MinValue + 1, lastScore - AspirationWindow);
-            var beta = Math.Min(MaxValue - 1, lastScore + AspirationWindow);
-            
-            var maxScore = MinValue;
+            depthLog = depth;
 
-            if (_previousBestMove != Move.NullMove)
-            {
-                for (var i = 0; i < moves.Length; i++)
-                {
-                    if (moves[i] != _previousBestMove) continue;
-                
-                    Swap(ref moves[i], ref moves[0]);
-                    break;
-                }
-            }
-            
+            var window = depth < 4 ? 200 : AspirationWindow;
             OrderMoves(board, moves, entry, zKey, true);
-            
-            foreach (var move in moves)
+
+            while (true)
             {
                 if (timer.MillisecondsElapsedThisTurn >= timeLimit)
                     break;
-            
-                board.MakeMove(move);
-                var score = -Search(depth - 1, board, alpha, beta);
-                board.UndoMove(move);
-
-                if (score <= maxScore) continue;
-            
-                maxScore = score;
-                bestMove = move;
-            }
-
-            if (maxScore <= alpha || maxScore >= beta)
-            {
-                maxScore = MinValue;
+                
+                var alpha = Math.Max(MinValue + 1, lastScore - window);
+                var beta = Math.Min(MaxValue - 1, lastScore + window);
+                
+                var maxScore = MinValue;
+                var windowBest = bestMove;
+                
                 foreach (var move in moves)
                 {
                     if (timer.MillisecondsElapsedThisTurn >= timeLimit)
                         break;
-
+            
                     board.MakeMove(move);
-                    var score = -Search(depth - 1, board, MinValue, MaxValue);
+                    var score = -Search(depth - 1, board, -beta, -alpha);
                     board.UndoMove(move);
 
-                    if (score <= maxScore) continue;
+                    if (score > maxScore)
+                    {
+                        maxScore = score;
+                        windowBest = move;
+                    }
 
-                    maxScore = score;
-                    bestMove = move;
+                    if (score > alpha)
+                    {
+                        alpha = score;
+                    }
+                }
+
+                if (maxScore > lastScore - window && maxScore < lastScore + window)
+                {
+                    lastScore = maxScore;
+                    bestMove = windowBest;
+                    _previousBestMove = bestMove;
+                    break;
+                }
+
+                window += window / 2;
+
+                // Just in case
+                if (window > 10000)
+                {
+                    lastScore = maxScore;
+                    bestMove = windowBest;
+                    _previousBestMove = bestMove;
+                    break;
                 }
             }
-
-            lastScore = maxScore;
-            _previousBestMove = bestMove;
         }
 
-        ConsoleHelper.Log("Reached a depth of " + d);
+        ConsoleHelper.Log("Reached a depth of " + depthLog);
         
         return bestMove;
     }
 
     // Via ChatGPT
-    private static int ComputeTimeLimit(Board board, Timer timer)
+    private static int ComputeTimeLimit(Board board, Timer timer, Span<Move> moves)
     {
         var movesLeft = board.PlyCount < 40 ? 40 - board.PlyCount / 2 : 20; // Estimate
         var baseTime = timer.MillisecondsRemaining / (double) movesLeft;
         
         // Scale by complexity: more captures -> spend more time
-        Span<Move> moves = stackalloc Move[128];
-        board.GetLegalMovesNonAlloc(ref moves);
         var moveCount = moves.Length;
         
         var complexityFactor = Math.Min(2.0, 1.0 + (moveCount / 20.0)); // 1–2x
