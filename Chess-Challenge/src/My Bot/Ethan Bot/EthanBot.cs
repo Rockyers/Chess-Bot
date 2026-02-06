@@ -12,6 +12,13 @@ namespace Chess_Challenge.My_Bot.Ethan_Bot;
 public class EthanBot : IChessBot
 {
     public string Name() => "Ethan Bot";
+
+    private const bool TimeManagement = true;
+    private bool _cancelSearch;
+    private Timer _timer;
+    private int _timeLimit;
+    
+    private bool TimeExceeded() => _cancelSearch || (_timer.MillisecondsElapsedThisTurn >= _timeLimit);
     
     private const int MaximumDepth = 30;
     private const int MaxQuiescenceDepth = 15;
@@ -37,6 +44,16 @@ public class EthanBot : IChessBot
         public TTFlag Flag;
         public Move BestMove;
     }
+
+    private const int PawnStructureTableSize = 1 << 16; // ~65k entries
+    private static readonly PawnStructureTableEnty[] PawnStructureTable = new PawnStructureTableEnty[PawnStructureTableSize];
+    
+    private struct PawnStructureTableEnty
+    {
+        public ulong Key;
+        public int MiddlegameEval;
+        public int EndgameEval;
+    }
     
     // Killer moves, 2 per depth
     private readonly Move[,] _killerMoves = new Move[512, 2];
@@ -59,8 +76,10 @@ public class EthanBot : IChessBot
 
         Span<Move> moves = stackalloc Move[MoveGenerator.MaxMoves];
         board.GetLegalMovesNonAlloc(ref moves);
-        
-        var timeLimit = ComputeTimeLimit(board, timer, moves);
+
+        _cancelSearch = false;
+        _timer = timer;
+        _timeLimit = TimeManagement ? ComputeTimeLimit(board, timer.MillisecondsRemaining, moves) : ComputeTimeLimit(board, 60 * 1000, moves);
         
         var bestMove = moves[0];
 
@@ -69,19 +88,15 @@ public class EthanBot : IChessBot
         
         for (var depth = 1; depth < MaximumDepth; depth++)
         {
-            if (timer.MillisecondsElapsedThisTurn >= timeLimit)
-                break;
+            if (TimeExceeded()) break;
             
             depthLog = depth;
 
             var window = depth < 4 ? 200 : AspirationWindow;
             OrderMoves(board, moves, entry, zKey, true);
 
-            while (true)
+            while (!TimeExceeded())
             {
-                if (timer.MillisecondsElapsedThisTurn >= timeLimit)
-                    break;
-                
                 var alpha = Math.Max(MinValue + 1, lastScore - window);
                 var beta = Math.Min(MaxValue - 1, lastScore + window);
                 
@@ -90,14 +105,14 @@ public class EthanBot : IChessBot
                 
                 foreach (var move in moves)
                 {
-                    if (timer.MillisecondsElapsedThisTurn >= timeLimit)
-                        break;
-
+                    if (TimeExceeded()) break;
             
                     board.MakeMove(move);
                     var extension = CalculateExtension(move, board, 0);
                     var score = -Search(depth - 1 + extension, board, -beta, -alpha, extension);
                     board.UndoMove(move);
+                    
+                    if (TimeExceeded()) break;
 
                     if (score > maxScore)
                     {
@@ -106,10 +121,10 @@ public class EthanBot : IChessBot
                     }
 
                     if (score > alpha)
-                    {
                         alpha = score;
-                    }
                 }
+                
+                if (TimeExceeded()) break;
 
                 if (maxScore > lastScore - window && maxScore < lastScore + window)
                 {
@@ -138,10 +153,10 @@ public class EthanBot : IChessBot
     }
 
     // Via ChatGPT
-    private static int ComputeTimeLimit(Board board, Timer timer, Span<Move> moves)
+    private static int ComputeTimeLimit(Board board, long milisecondsRemaining, Span<Move> moves)
     {
         var movesLeft = board.PlyCount < 40 ? 40 - board.PlyCount / 2 : 20; // Estimate
-        var baseTime = timer.MillisecondsRemaining / (double) movesLeft;
+        var baseTime = milisecondsRemaining / (double) movesLeft;
         
         // Scale by complexity: more captures -> spend more time
         var moveCount = moves.Length;
@@ -159,6 +174,8 @@ public class EthanBot : IChessBot
     // **** SEARCH ****
     private int Search(int depth, Board board, int alpha, int beta, int currentExtension)
     {
+        if (TimeExceeded()) return 0;
+        
         var originalAlpha = alpha;
         var isWhite = board.IsWhiteToMove;
         
@@ -218,11 +235,12 @@ public class EthanBot : IChessBot
         var moveIndex = 0;
         foreach (var move in moves)
         {
+            if (TimeExceeded()) return 0;
+            
             var ply = board.PlyCount;
             board.MakeMove(move);
             var extension = CalculateExtension(move, board, currentExtension);
-
-            var score = 0;
+            
             var nextDepth = depth - 1 + extension;
             var nextExtension = currentExtension + extension;
 
@@ -239,7 +257,8 @@ public class EthanBot : IChessBot
                 if (move == _killerMoves[ply, 0] || move == _killerMoves[ply, 1] || historyScore > 200 + 5 * depth)
                     reduction = 0; // Dont reduce good history moves or killer moves
             }
-            
+
+            int score;
             if (reduction > 0)
             {
                 score = -Search(nextDepth - reduction, board, -alpha - 1, -alpha, nextExtension);
@@ -250,6 +269,8 @@ public class EthanBot : IChessBot
             else score = -Search(nextDepth, board, -beta, -alpha, nextExtension);
             
             board.UndoMove(move);
+            
+            if (TimeExceeded()) return 0;
             
             if (score > maxScore)
             {
@@ -380,8 +401,10 @@ public class EthanBot : IChessBot
         }
     }
 
-    private static int Quiescence(Board board, int alpha, int beta, int qDepth = 1)
+    private int Quiescence(Board board, int alpha, int beta, int qDepth = 1)
     {
+        if (TimeExceeded()) return 0;
+        
         var eval = EvaluateRelative(board);
 
         if (qDepth > MaxQuiescenceDepth)
@@ -398,6 +421,7 @@ public class EthanBot : IChessBot
 
         foreach (var move in moves)
         {
+            if (TimeExceeded()) return 0;
             if (CaptureScore(move) < 0) continue;
             
             board.MakeMove(move);
@@ -475,7 +499,7 @@ public class EthanBot : IChessBot
 
     public static float DisplayEval(Board board)
     {
-        return (board.IsWhiteToMove ? 1 : -1) * Quiescence(board, MinValue, MaxValue) / 100.0f;
+        return EvaluateBoard(board) / 100.0f;
     }
     
     private static int EvaluateRelative(Board board)
@@ -718,14 +742,30 @@ public class EthanBot : IChessBot
         var whitePawns = board.GetPieceBitboard(PieceType.Pawn, true);
         var blackPawns = board.GetPieceBitboard(PieceType.Pawn, false);
         
+        var key = whitePawns ^ (blackPawns * 0x9E3779B97F4A7C15UL);
+        var index = (int)(key & (PawnStructureTableSize - 1));
+        
+        var entry = PawnStructureTable[index];
+
+        if (entry.Key == key)
+        {
+            middleGameEval += entry.MiddlegameEval;
+            endGameEval += entry.EndgameEval;
+            return;
+        }
+        
         var whiteScore = EvaluatePawnStructure(whitePawns, blackPawns, true);
         var blackScore = EvaluatePawnStructure(blackPawns, whitePawns, false);
 
-        middleGameEval += whiteScore;
-        middleGameEval -= blackScore;
-        
-        endGameEval += whiteScore / 2;
-        endGameEval -= blackScore / 2;
+        var middlegameScore = whiteScore - blackScore;
+        var endgameScore = (whiteScore - blackScore) / 2;
+
+        entry.Key = key;
+        entry.MiddlegameEval = middlegameScore;
+        entry.EndgameEval = endgameScore;
+
+        middleGameEval += middlegameScore;
+        endGameEval += endgameScore;
     }
 
     private static int _doubledPawnPenalty = 15;
