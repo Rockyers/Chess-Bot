@@ -3,7 +3,6 @@ using System.Numerics;
 using ChessChallenge.API;
 using ChessChallenge.Application;
 using ChessChallenge.Chess;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Board = ChessChallenge.API.Board;
 using Move = ChessChallenge.API.Move;
 
@@ -209,6 +208,7 @@ public class EthanBot : IChessBot
         if (!board.IsInCheck() && 
             depth >= 4 && 
             ComputePhase(board) > 14 && 
+            beta > MaxValue - 10_000 &&
             (board.GetPieceBitboard(PieceType.Queen, isWhite) != 0 || board.GetPieceBitboard(PieceType.Rook, isWhite) != 0) &&
             CountSetBits(board.GetPieceBitboard(PieceType.Pawn, isWhite)) > 3)
         {
@@ -416,8 +416,11 @@ public class EthanBot : IChessBot
             alpha = eval;
         
         Span<Move> moves = stackalloc Move[MoveGenerator.MaxMoves];
-        board.GetLegalMovesNonAlloc(ref moves, true);
-        OrderCaptures(moves, 0, moves.Length);
+        board.GetLegalMovesNonAlloc(ref moves);
+
+        var (zKey, _, entry) = GetZobrist(board);
+        
+        OrderMoves(board, moves, entry, zKey);
 
         foreach (var move in moves)
         {
@@ -425,7 +428,13 @@ public class EthanBot : IChessBot
             if (CaptureScore(move) < 0) continue;
             
             board.MakeMove(move);
-            var score = -Quiescence(board, -beta, -alpha, qDepth + 1);
+
+            var score = MinValue;
+            if (board.IsInCheck() || move.IsCapture || move.IsPromotion)
+            {
+                score = -Quiescence(board, -beta, -alpha, qDepth + 1);
+            }
+
             board.UndoMove(move);
 
             if (score >= beta)
@@ -511,14 +520,6 @@ public class EthanBot : IChessBot
 
     private static int EvaluateBoard(Board board)
     {
-        if (board.IsInStalemate())
-            return 0;
-        
-        if (board.IsInCheckmate())
-            return board.IsWhiteToMove 
-                ? MinValue + board.PlyCount 
-                : MaxValue - board.PlyCount;
-     
         var middleGameEval = 0;
         var endGameEval = 0;
         var phase = ComputePhase(board);
