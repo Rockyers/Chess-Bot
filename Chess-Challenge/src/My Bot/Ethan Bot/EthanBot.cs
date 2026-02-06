@@ -2,7 +2,10 @@
 using System.Numerics;
 using ChessChallenge.API;
 using ChessChallenge.Application;
+using ChessChallenge.Chess;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Board = ChessChallenge.API.Board;
+using Move = ChessChallenge.API.Move;
 
 namespace Chess_Challenge.My_Bot.Ethan_Bot;
 
@@ -12,6 +15,7 @@ public class EthanBot : IChessBot
     
     private const int MaximumDepth = 30;
     private const int MaxQuiescenceDepth = 15;
+    private const int MaxExtensions = 16;
     private const int AspirationWindow = 80;
 
     private const int MinValue = -1_000_000_000;
@@ -53,7 +57,7 @@ public class EthanBot : IChessBot
         
         var (zKey, _, entry) = GetZobrist(board);
 
-        Span<Move> moves = stackalloc Move[128];
+        Span<Move> moves = stackalloc Move[MoveGenerator.MaxMoves];
         board.GetLegalMovesNonAlloc(ref moves);
         
         var timeLimit = ComputeTimeLimit(board, timer, moves);
@@ -88,9 +92,11 @@ public class EthanBot : IChessBot
                 {
                     if (timer.MillisecondsElapsedThisTurn >= timeLimit)
                         break;
+
             
                     board.MakeMove(move);
-                    var score = -Search(depth - 1, board, -beta, -alpha);
+                    var extension = CalculateExtension(move, board, 0);
+                    var score = -Search(depth - 1 + extension, board, -beta, -alpha, extension);
                     board.UndoMove(move);
 
                     if (score > maxScore)
@@ -151,7 +157,7 @@ public class EthanBot : IChessBot
     }
 
     // **** SEARCH ****
-    private int Search(int depth, Board board, int alpha, int beta)
+    private int Search(int depth, Board board, int alpha, int beta, int currentExtension)
     {
         var originalAlpha = alpha;
         var isWhite = board.IsWhiteToMove;
@@ -191,7 +197,7 @@ public class EthanBot : IChessBot
         {
             board.TrySkipTurn();
             var r = depth > 6 ? 3 : 2;
-            var score = -Search(depth - r, board, -beta, -beta + 1);
+            var score = -Search(depth - r, board, -beta, -beta + 1, 0);
             board.UndoSkipTurn();
 
             if (score >= beta)
@@ -205,7 +211,7 @@ public class EthanBot : IChessBot
         var maxScore = MinValue;
         var bestMove = Move.NullMove;
         
-        Span<Move> moves = stackalloc Move[128];
+        Span<Move> moves = stackalloc Move[MoveGenerator.MaxMoves];
         board.GetLegalMovesNonAlloc(ref moves);
         OrderMoves(board, moves, entry, zKey);
 
@@ -214,9 +220,11 @@ public class EthanBot : IChessBot
         {
             var ply = board.PlyCount;
             board.MakeMove(move);
+            var extension = CalculateExtension(move, board, currentExtension);
 
             var score = 0;
-            var nextDepth = depth - 1;
+            var nextDepth = depth - 1 + extension;
+            var nextExtension = currentExtension + extension;
 
             var reduce = moveIndex >= 4 && depth >= 4 && !board.IsInCheck() && !move.IsCapture;
 
@@ -234,15 +242,12 @@ public class EthanBot : IChessBot
             
             if (reduction > 0)
             {
-                score = -Search(nextDepth - reduction, board, -alpha - 1, -alpha);
+                score = -Search(nextDepth - reduction, board, -alpha - 1, -alpha, nextExtension);
 
                 if (score > alpha)
-                    score = -Search(nextDepth, board, -beta, -alpha);
+                    score = -Search(nextDepth, board, -beta, -alpha, nextExtension);
             }
-            else
-            {
-                score = -Search(nextDepth, board, -beta, -alpha);
-            }
+            else score = -Search(nextDepth, board, -beta, -alpha, nextExtension);
             
             board.UndoMove(move);
             
@@ -285,6 +290,24 @@ public class EthanBot : IChessBot
         }
         
         return maxScore;
+    }
+    
+    private static int CalculateExtension(Move movePlayed, Board boardAfterPlaying, int currentExtension)
+    {
+        if (currentExtension >= MaxExtensions) return 0;
+        
+        var extension = 0;
+        if (boardAfterPlaying.IsInCheck())
+        {
+            extension = 1;
+        }
+
+        if (movePlayed.IsPromotion)
+        {
+            extension = 1;
+        }
+
+        return extension;
     }
     
     private void UpdateQuietCutoff(Move move, int ply, bool isWhiteToPlay, int depth)
@@ -369,7 +392,7 @@ public class EthanBot : IChessBot
         if (eval > alpha)
             alpha = eval;
         
-        Span<Move> moves = stackalloc Move[128];
+        Span<Move> moves = stackalloc Move[MoveGenerator.MaxMoves];
         board.GetLegalMovesNonAlloc(ref moves, true);
         OrderCaptures(moves, 0, moves.Length);
 
@@ -480,7 +503,7 @@ public class EthanBot : IChessBot
         EvaluatePieceSquares(board, ref middleGameEval, ref endGameEval);
         if (phase > 7) EvaluateKingSafety(board, ref middleGameEval, ref endGameEval);
         EvaluateDoubleBishop(board, ref middleGameEval, ref endGameEval);
-        if (phase > 5) EvaluateMobility(board, ref middleGameEval, ref endGameEval);
+        EvaluateMobility(board, ref middleGameEval, ref endGameEval);
         
         // Expensive so reserve for opening/later in the game after pieces are gone
         if (board.PlyCount < 4 || phase < 22)
@@ -519,7 +542,7 @@ public class EthanBot : IChessBot
             var bitboard = board.GetPieceBitboard(pieceType, true);
             while (bitboard != 0)
             {
-                var square = BitOperations.TrailingZeroCount(bitboard);
+                var square = NextSquare(bitboard);
                 bitboard &= bitboard - 1; // Clear the rightmost set bit
 
                 middleGameEval += PieceSquareTables.GetSquare(piece, square, false);
@@ -534,7 +557,7 @@ public class EthanBot : IChessBot
             var bitboard = board.GetPieceBitboard(pieceType, false);
             while (bitboard != 0)
             {
-                var square = BitOperations.TrailingZeroCount(bitboard) ^ 0b111000; //XOR with 111000 (56) to flip in groups of eight (flip the board) 
+                var square = NextSquare(bitboard) ^ 0b111000; //XOR with 111000 (56) to flip in groups of eight (flip the board) 
                 bitboard &= bitboard - 1; // Clear the rightmost set bit
 
                 middleGameEval -= PieceSquareTables.GetSquare(piece, square, false);
@@ -557,9 +580,8 @@ public class EthanBot : IChessBot
         var mgPenalty = 0;
         var egPenalty = 0;
         
-        var square =  BitOperations.TrailingZeroCount(kingBoard);
-
-        var kingBox = KingBox(square);
+        var square =  NextSquare(kingBoard);
+        var kingBox = Bits.KingSafetyMask[square];
         
         var enemyPieces = board.GetPieceBitboard(PieceType.Queen, !isWhite) | 
                               board.GetPieceBitboard(PieceType.Rook, !isWhite) | 
@@ -590,20 +612,6 @@ public class EthanBot : IChessBot
         middleGameEval += mgPenalty * (isWhite ? -1 : 1);
         endGameEval += egPenalty * (isWhite ? -1 : 1);
     }
-    
-    // Via ChatGPT
-    private static ulong KingBox(int square)
-    {
-        var rank = square >> 3;
-        var file = square & 7;
-
-        var bb = 0UL;
-        for (var r = Math.Max(0, rank - 1); r <= Math.Min(7, rank + 1); r++)
-        for (var f = Math.Max(0, file - 1); f <= Math.Min(7, file + 1); f++)
-            bb |= 1UL << (r * 8 + f);
-
-        return bb;
-    }
 
     private static void EvaluateDoubleBishop(Board board, ref int middleGameEval, ref int endGameEval)
     {
@@ -622,32 +630,68 @@ public class EthanBot : IChessBot
     
     private static void EvaluateMobility(Board board, ref int middleGameEval, ref int endGameEval)
     {
-        Span<Move> moves = stackalloc Move[128];
-        board.GetLegalMovesNonAlloc(ref moves);
-        EvaluateMobility(moves, board.IsWhiteToMove, ref middleGameEval, ref endGameEval);
-    }
+        var isWhite = board.IsWhiteToMove;
 
-    private static void EvaluateMobility(Span<Move> moves, bool isWhite, ref int middleGameEval, ref int endGameEval)
-    {
-        Span<int> count = stackalloc int[7];
+        var friendlyPieces = isWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard;
+        var allPieces = board.AllPiecesBitboard;
+
+        var middlegameScore = 0;
+        var endgameScore = 0;
         
-        foreach (var move in moves)
+        var knightBitboard = board.GetPieceBitboard(PieceType.Knight, isWhite);
+        while (knightBitboard != 0)
         {
-            var piece = (int) move.MovePieceType;
+            var square = NextSquare(knightBitboard);
+            knightBitboard &= knightBitboard - 1;
 
-            // Do NOT evaluate pawn or king mobility
-            if (piece is < 2 or > 5) continue;
-
-            count[piece]++;
+            var mobility = CountSetBits(Bits.KnightAttacks[square] & ~friendlyPieces);
+            middlegameScore += MobilityMiddlegame[2] * mobility;
+            endgameScore += MobilityEndgame[2] * mobility;
         }
+        
+        var bishopBitboard = board.GetPieceBitboard(PieceType.Bishop, isWhite);
+        while (bishopBitboard != 0)
+        {
+            var square = NextSquare(bishopBitboard);
+            bishopBitboard &= bishopBitboard - 1;
 
-        for (var piece = 2; piece < 6; piece++)
-        { 
-            middleGameEval += count[piece] * MobilityMiddlegame[piece] * (isWhite ? 1 : -1);
-            endGameEval += count[piece] * MobilityEndgame[piece] * (isWhite ? 1 : -1);
+            var attacks = Magic.GetBishopAttacks(square, allPieces) & ~friendlyPieces;
+            var mobility = CountSetBits(attacks);
+            
+            middlegameScore += MobilityMiddlegame[3] * mobility;
+            endGameEval += MobilityEndgame[3] * mobility;
         }
+        
+        var rookBitboard = board.GetPieceBitboard(PieceType.Rook, isWhite);
+        while (rookBitboard != 0)
+        {
+            var square = NextSquare(rookBitboard);
+            rookBitboard &= rookBitboard - 1;
+            
+            var attacks = Magic.GetRookAttacks(square, allPieces) & ~friendlyPieces;
+            var mobility = CountSetBits(attacks);
+            
+            middlegameScore += MobilityMiddlegame[4] * mobility;
+            endGameEval += MobilityEndgame[4] * mobility;
+        }
+        
+        var queenBitboard = board.GetPieceBitboard(PieceType.Queen, isWhite);
+        while (queenBitboard != 0)
+        {
+            var square = NextSquare(queenBitboard);
+            queenBitboard &= queenBitboard - 1;
+            
+            var attacks = (Magic.GetBishopAttacks(square, allPieces) | Magic.GetRookAttacks(square, allPieces)) & ~friendlyPieces;
+            var mobility = CountSetBits(attacks);
+            
+            middlegameScore += MobilityMiddlegame[5] * mobility;
+            endGameEval += MobilityEndgame[5] * mobility;
+        }
+        
+        middleGameEval += middlegameScore *  (isWhite ? 1 : -1);
+        endGameEval += endgameScore *  (isWhite ? 1 : -1);
     }
-
+    
     private static void EvaluatePawnStructure(Board board, ref int middleGameEval, ref int endGameEval)
     {
         var whitePawns = board.GetPieceBitboard(PieceType.Pawn, true);
@@ -714,26 +758,6 @@ public class EthanBot : IChessBot
         return score;
     }
 
-    private static ulong FrontMask(ulong pawns, bool isWhite)
-    {
-        var mask = pawns;
-        
-        if (isWhite)
-        {
-            mask |= mask << 8;
-            mask |= mask << 16;
-            mask |= mask << 32;
-        }
-        else
-        {
-            mask |= mask >> 8;
-            mask |= mask >> 16;
-            mask |= mask >> 32;
-        }
-        
-        return mask;
-    }
-
     private static void EvaluatePassedPawns(Board board, ref int middleGameEval, ref int endGameEval)
     {
         EvaluatePassedPawns(board, true, ref middleGameEval, ref endGameEval);
@@ -747,22 +771,22 @@ public class EthanBot : IChessBot
 
         while (bitboard != 0)
         {
-            var square = BitOperations.TrailingZeroCount(bitboard);
+            var square = NextSquare(bitboard);
             bitboard &= bitboard - 1;
 
-            var file = square & 7;
-            var rank = square >> 3;
+            var file = BoardHelper.FileIndex(square);
+            var rank = BoardHelper.RankIndex(square);
 
             var pawnRank = isWhite ? rank + 1 : 8 - (rank + 1);
             
-            if (!IsPassedPawn(enemyBitboard, rank, file, isWhite))
+            if (!IsPassedPawn(enemyBitboard, square, isWhite))
                 continue;
             
             var enemyKing = board.GetPieceBitboard(PieceType.King, !isWhite);
-            var enemyKingSq = BitOperations.TrailingZeroCount(enemyKing);
+            var enemyKingSquare = NextSquare(enemyKing);
 
-            var dist = Math.Abs((enemyKingSq & 7) - file) +
-                       Math.Abs((enemyKingSq >> 3) - rank);
+            var dist = Math.Abs(BoardHelper.FileIndex(enemyKingSquare) - file) +
+                       Math.Abs(BoardHelper.RankIndex(enemyKingSquare) - rank);
 
             endGameEval += (7 - dist) * (isWhite ? 2 : -2);
             
@@ -771,16 +795,9 @@ public class EthanBot : IChessBot
         }
     }
 
-    private static bool IsPassedPawn(ulong enemyBitboard, int rank, int file, bool isWhite)
+    private static bool IsPassedPawn(ulong enemyBitboard, int square, bool isWhite)
     {
-        var mask = FileMasks[file];
-        if (file > 0) mask |= FileMasks[file - 1];
-        if (file < 7) mask |= FileMasks[file + 1];
-        
-        mask = isWhite 
-            ? mask << ((rank + 1) * 8) 
-            :  mask >> ((7 - rank) * 8);
-
+        var mask = isWhite ? Bits.WhitePassedPawnMask[square] : Bits.BlackPassedPawnMask[square];
         return (enemyBitboard & mask) == 0;
     }
 
@@ -821,5 +838,6 @@ public class EthanBot : IChessBot
     }
 
     private static int CountSetBits(ulong n) => BitOperations.PopCount(n);
+    private static int NextSquare(ulong bitboard) => BitOperations.TrailingZeroCount(bitboard);
     private static void Swap(ref Move a, ref Move b) => (a, b) = (b, a);
 }
