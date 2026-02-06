@@ -634,6 +634,8 @@ public class EthanBot : IChessBot
 
         var friendlyPieces = isWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard;
         var allPieces = board.AllPiecesBitboard;
+        
+        var enemyPawnAttacks = GeneratePawnAttacks(board, !isWhite);
 
         var middlegameScore = 0;
         var endgameScore = 0;
@@ -644,7 +646,9 @@ public class EthanBot : IChessBot
             var square = NextSquare(knightBitboard);
             knightBitboard &= knightBitboard - 1;
 
-            var mobility = CountSetBits(Bits.KnightAttacks[square] & ~friendlyPieces);
+            var attacks = Bits.KnightAttacks[square] & ~friendlyPieces & ~enemyPawnAttacks;
+            var mobility = CountSetBits(attacks);
+            
             middlegameScore += MobilityMiddlegame[2] * mobility;
             endgameScore += MobilityEndgame[2] * mobility;
         }
@@ -655,7 +659,7 @@ public class EthanBot : IChessBot
             var square = NextSquare(bishopBitboard);
             bishopBitboard &= bishopBitboard - 1;
 
-            var attacks = Magic.GetBishopAttacks(square, allPieces) & ~friendlyPieces;
+            var attacks = Magic.GetBishopAttacks(square, allPieces) & ~friendlyPieces & ~enemyPawnAttacks;
             var mobility = CountSetBits(attacks);
             
             middlegameScore += MobilityMiddlegame[3] * mobility;
@@ -668,7 +672,7 @@ public class EthanBot : IChessBot
             var square = NextSquare(rookBitboard);
             rookBitboard &= rookBitboard - 1;
             
-            var attacks = Magic.GetRookAttacks(square, allPieces) & ~friendlyPieces;
+            var attacks = Magic.GetRookAttacks(square, allPieces) & ~friendlyPieces & ~enemyPawnAttacks;
             var mobility = CountSetBits(attacks);
             
             middlegameScore += MobilityMiddlegame[4] * mobility;
@@ -681,7 +685,7 @@ public class EthanBot : IChessBot
             var square = NextSquare(queenBitboard);
             queenBitboard &= queenBitboard - 1;
             
-            var attacks = (Magic.GetBishopAttacks(square, allPieces) | Magic.GetRookAttacks(square, allPieces)) & ~friendlyPieces;
+            var attacks = (Magic.GetBishopAttacks(square, allPieces) | Magic.GetRookAttacks(square, allPieces)) & ~friendlyPieces & ~enemyPawnAttacks;
             var mobility = CountSetBits(attacks);
             
             middlegameScore += MobilityMiddlegame[5] * mobility;
@@ -691,7 +695,24 @@ public class EthanBot : IChessBot
         middleGameEval += middlegameScore *  (isWhite ? 1 : -1);
         endGameEval += endgameScore *  (isWhite ? 1 : -1);
     }
-    
+
+    private static ulong GeneratePawnAttacks(Board board, bool isWhite)
+    {
+        var attackTable = isWhite ? Bits.WhitePawnAttacks :  Bits.BlackPawnAttacks;
+        var bitboard = board.GetPieceBitboard(PieceType.King, isWhite);
+
+        ulong attacks = 0;
+        while (bitboard != 0)
+        {
+            var square = NextSquare(bitboard);
+            bitboard &= bitboard - 1;
+
+            attacks |= attackTable[square];
+        }
+
+        return attacks;
+    }
+
     private static void EvaluatePawnStructure(Board board, ref int middleGameEval, ref int endGameEval)
     {
         var whitePawns = board.GetPieceBitboard(PieceType.Pawn, true);
