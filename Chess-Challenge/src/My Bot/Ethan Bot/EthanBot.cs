@@ -901,5 +901,4 @@ public class EthanBot : IChessBot
 
     private static int CountSetBits(ulong n) => BitOperations.PopCount(n);
     private static int NextSquare(ulong bitboard) => BitOperations.TrailingZeroCount(bitboard);
-    private static void Swap(ref Move a, ref Move b) => (a, b) = (b, a);
 }
