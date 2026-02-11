@@ -526,12 +526,13 @@ public class EthanBot : IChessBot
 
         EvaluateMaterial(board, ref middleGameEval, ref endGameEval);
         EvaluatePieceSquares(board, ref middleGameEval, ref endGameEval);
-        if (phase > 7) EvaluateKingSafety(board, ref middleGameEval, ref endGameEval);
+        if (phase > 5) EvaluateKingSafety(board, ref middleGameEval, ref endGameEval);
         EvaluateDoubleBishop(board, ref middleGameEval, ref endGameEval);
-        EvaluateMobility(board, ref middleGameEval, ref endGameEval);
+        EvaluateMobility(board, true, ref middleGameEval, ref endGameEval);
+        EvaluateMobility(board, false, ref middleGameEval, ref endGameEval);
         
         // Expensive so reserve for opening/later in the game after pieces are gone
-        if (board.PlyCount < 4 || phase < 22)
+        if (board.PlyCount < 6 || phase > 20)
             EvaluatePawnStructure(board, ref middleGameEval, ref endGameEval);
         
         EvaluatePassedPawns(board, ref middleGameEval, ref endGameEval);
@@ -653,10 +654,8 @@ public class EthanBot : IChessBot
         }
     }
     
-    private static void EvaluateMobility(Board board, ref int middleGameEval, ref int endGameEval)
+    private static void EvaluateMobility(Board board, bool isWhite, ref int middleGameEval, ref int endgameEval)
     {
-        var isWhite = board.IsWhiteToMove;
-
         var friendlyPieces = isWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard;
         var allPieces = board.AllPiecesBitboard;
         
@@ -688,7 +687,7 @@ public class EthanBot : IChessBot
             var mobility = CountSetBits(attacks);
             
             middlegameScore += MobilityMiddlegame[3] * mobility;
-            endGameEval += MobilityEndgame[3] * mobility;
+            endgameEval += MobilityEndgame[3] * mobility;
         }
         
         var rookBitboard = board.GetPieceBitboard(PieceType.Rook, isWhite);
@@ -701,7 +700,7 @@ public class EthanBot : IChessBot
             var mobility = CountSetBits(attacks);
             
             middlegameScore += MobilityMiddlegame[4] * mobility;
-            endGameEval += MobilityEndgame[4] * mobility;
+            endgameEval += MobilityEndgame[4] * mobility;
         }
         
         var queenBitboard = board.GetPieceBitboard(PieceType.Queen, isWhite);
@@ -714,11 +713,11 @@ public class EthanBot : IChessBot
             var mobility = CountSetBits(attacks);
             
             middlegameScore += MobilityMiddlegame[5] * mobility;
-            endGameEval += MobilityEndgame[5] * mobility;
+            endgameEval += MobilityEndgame[5] * mobility;
         }
         
         middleGameEval += middlegameScore *  (isWhite ? 1 : -1);
-        endGameEval += endgameScore *  (isWhite ? 1 : -1);
+        endgameEval += endgameScore *  (isWhite ? 1 : -1);
     }
 
     private static ulong GeneratePawnAttacks(Board board, bool isWhite)
