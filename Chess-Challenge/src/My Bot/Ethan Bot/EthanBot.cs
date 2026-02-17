@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Numerics;
+using Chess_Challenge.My_Bot.Ethan_Bot.OpeningBook;
 using ChessChallenge.API;
 using ChessChallenge.Application;
 using ChessChallenge.Chess;
@@ -20,7 +22,7 @@ public class EthanBot : IChessBot
     private bool TimeExceeded() => _cancelSearch || (_timer.MillisecondsElapsedThisTurn >= _timeLimit);
     
     private const int MaximumDepth = 30;
-    private const int MaxQuiescenceDepth = 15;
+    private const int MaxQuiescenceDepth = 20;
     private const int MaxExtensions = 16;
     private const int AspirationWindow = 80;
 
@@ -62,6 +64,8 @@ public class EthanBot : IChessBot
     
     public Move Think(Board board, Timer timer)
     {
+        ConsoleHelper.Log("Polyglot Hash: 0x" + PolyglotHelper.GetPolyglotKey(board).ToString("x"));
+        
         // Decay History
         if (board.PlyCount % 6 == 0 && board.PlyCount > 1) 
         {
@@ -723,7 +727,7 @@ public class EthanBot : IChessBot
     private static ulong GeneratePawnAttacks(Board board, bool isWhite)
     {
         var attackTable = isWhite ? Bits.WhitePawnAttacks :  Bits.BlackPawnAttacks;
-        var bitboard = board.GetPieceBitboard(PieceType.King, isWhite);
+        var bitboard = board.GetPieceBitboard(PieceType.Pawn, isWhite);
 
         ulong attacks = 0;
         while (bitboard != 0)

@@ -25,6 +25,8 @@ namespace ChessChallenge.API
 		int cachedMoveCount;
 		int depth;
 
+		int enPassantSquare;
+
         /// <summary>
         /// Create a new board. Note: this should not be used in the challenge,
         /// use the board provided in the Think method instead.
@@ -194,6 +196,11 @@ namespace ChessChallenge.API
                 hasCachedCaptureMoves = true;
 			}
 			return cachedLegalCaptureMoves;
+		}
+
+		public int GetEnPassantFile()
+		{
+			return board.currentGameState.enPassantFile;
 		}
 
 		/// <summary>

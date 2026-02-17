@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Chess_Challenge.My_Bot;
 using Chess_Challenge.My_Bot.Ethan_Bot;
+using Chess_Challenge.My_Bot.Ethan_Bot.OpeningBook;
 using static ChessChallenge.Application.Settings;
 using static ChessChallenge.Application.ConsoleHelper;
 
