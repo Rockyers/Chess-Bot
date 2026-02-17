@@ -1,12 +1,18 @@
+using System;
+using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.IO;
 using ChessChallenge.API;
+using ChessChallenge.Application.APIHelpers;
 using ChessChallenge.Chess;
 using Board = ChessChallenge.API.Board;
+using Move = ChessChallenge.API.Move;
 
 namespace Chess_Challenge.My_Bot.Ethan_Bot.OpeningBook;
 
-public class PolyglotHelper
+public static class PolyglotHelper
 {
-    private static readonly ulong[] POLYGLOT_RANDOM_ARRAY =
+    private static readonly ulong[] PolyglotRandomArray =
     {
         0x9D39247E33776D41, 0x2AF7398005AAA5C7, 0x44DB015024623547, 0x9C15F73E62A76AE2,
         0x75834465489C0C89, 0x3290AC3A203001BF, 0x0FBBAD1F61042279, 0xE83A908FF2FB60CA,
@@ -205,6 +211,102 @@ public class PolyglotHelper
         0xCF3145DE0ADD4289, 0xD0E4427A5514FB72, 0x77C621CC9FB3A483, 0x67A34DAC4356550B,
         0xF8D626AAAF278509
     };
+    
+    public struct PolyglotEntry
+    {
+        public ulong Key;
+        public ushort Move;
+        public ushort Weight;
+        public uint Learn;
+    }
+
+    public static PolyglotEntry[] LoadPolyglotBook(string path)
+    {
+        var data = File.ReadAllBytes(path);
+
+        var count = data.Length / 16;
+        var entries = new PolyglotEntry[count];
+
+        for (var i = 0; i < count; i++)
+        {
+            var offset = i * 16;
+            var span = data.AsSpan(offset, 16);
+
+            entries[i] = new PolyglotEntry
+            {
+                Key = BinaryPrimitives.ReadUInt64BigEndian(span[..8]),
+                Move = BinaryPrimitives.ReadUInt16BigEndian(span.Slice(8, 2)),
+                Weight = BinaryPrimitives.ReadUInt16BigEndian(span.Slice(10, 2)),
+                Learn = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(12, 4))
+            };
+        }
+
+        return entries;
+    }
+
+    public static bool TryPickMove(PolyglotEntry[] book, ulong key, out PolyglotEntry chosen)
+    {
+        chosen = default;
+        
+        var startIndex = FindIndexOfFirst(book, key);
+        if (startIndex == -1) return false;
+
+        var endIndex = startIndex;
+        while (endIndex < book.Length &&  book[endIndex].Key == key) 
+            endIndex++;
+        
+        var totalWeight = 0;
+        for (var i = startIndex; i < endIndex; i++)
+            totalWeight += book[i].Weight;
+
+        // Weighted random pick (bigger weight -> more likely to be picked)
+        if (totalWeight == 0)
+            return false;
+
+        var random = Random.Shared.Next(totalWeight);
+        
+        var cumulative = 0;
+        for (var i = startIndex; i < endIndex; i++)
+        {
+            cumulative += book[i].Weight;
+            
+            if (random >= cumulative) continue;
+            
+            chosen = book[i];
+            return true;
+        }
+
+        return false;
+    }
+
+    public static int FindIndexOfFirst(PolyglotEntry[] book, ulong key)
+    {
+        // Binary search
+        var low = 0;
+        var high = book.Length - 1;
+        var result = -1; // -1 = not in the book
+
+        while (low <= high)
+        {
+            var mid = (low + high) >> 1;
+
+            if (book[mid].Key < key)
+            {
+                low = mid + 1;
+            }
+            else if (book[mid].Key > key)
+            {
+                high = mid - 1;
+            }
+            else
+            {
+                result = mid;
+                high = mid - 1; // Need to find the LEFT most (first) occurence
+            }
+        }
+
+        return result;
+    }
 
     public static int GetPolyglotPieceIndex(Piece piece)
     {
@@ -220,23 +322,23 @@ public class PolyglotHelper
         {
             var square = piece.Square.Index;
             var pieceIndex = GetPolyglotPieceIndex(piece);
-            key ^= POLYGLOT_RANDOM_ARRAY[pieceIndex * 64 + square];
+            key ^= PolyglotRandomArray[pieceIndex * 64 + square];
         }
 
         // White to move
         var whiteToMove = board.IsWhiteToMove;
         if (whiteToMove)
-            key ^= POLYGLOT_RANDOM_ARRAY[780];
+            key ^= PolyglotRandomArray[780];
 
         // Castling rights
         if (board.HasKingsideCastleRight(true))  
-            key ^= POLYGLOT_RANDOM_ARRAY[768];
+            key ^= PolyglotRandomArray[768];
         if (board.HasQueensideCastleRight(true)) 
-            key ^= POLYGLOT_RANDOM_ARRAY[768+1];
+            key ^= PolyglotRandomArray[768+1];
         if (board.HasKingsideCastleRight(false)) 
-            key ^= POLYGLOT_RANDOM_ARRAY[768+2];
+            key ^= PolyglotRandomArray[768+2];
         if (board.HasQueensideCastleRight(false))
-            key ^= POLYGLOT_RANDOM_ARRAY[768+3];
+            key ^= PolyglotRandomArray[768+3];
 
         // En Passant
         if (board.GetEnPassantFile() > 0)
@@ -248,11 +350,32 @@ public class PolyglotHelper
             var epAttacks = BitBoardUtility.PawnAttacks(epBit, whiteToMove);
 
             if ((pawns & epAttacks) != 0)
-                key ^= POLYGLOT_RANDOM_ARRAY[772 + (board.GetEnPassantFile() - 1)];
+                key ^= PolyglotRandomArray[772 + (board.GetEnPassantFile() - 1)];
         }
 
         return key;
     }
-    
-    
+
+    public static Move? FindMatchingMove(Span<Move> legalMoves, ushort polyglotMove)
+    {
+        var targetSquareIndex = polyglotMove & 0b111111;
+        var startSquareIndex = (polyglotMove >> 6) & 0b111111;
+        var promotion = (polyglotMove >> 12) & 0b111111;
+
+        foreach (var move in legalMoves)
+        {
+            if (move.TargetSquare.Index != targetSquareIndex) continue;
+            if (move.StartSquare.Index != startSquareIndex) continue;
+
+            if (promotion != 0)
+            {
+                if (!move.IsPromotion) continue;
+                if ((int)move.PromotionPieceType - 1 != promotion) continue;
+            }
+            
+            return move;
+        }
+
+        return null;
+    }
 }

@@ -30,6 +30,8 @@ public class EthanBot : IChessBot
     private const int MaxValue =  1_000_000_000;
 
     private Move _previousBestMove = Move.NullMove;
+
+    private static PolyglotHelper.PolyglotEntry[] _openingBook = PolyglotHelper.LoadPolyglotBook("/Users/ethan/RiderProjects/Chess-Bot/Chess-Challenge/src/My Bot/Ethan Bot/OpeningBook/komodo.bin");
     
     // Transposition Table
     private const int TTSize = 1 << 22; // ~4M entries
@@ -64,7 +66,23 @@ public class EthanBot : IChessBot
     
     public Move Think(Board board, Timer timer)
     {
-        ConsoleHelper.Log("Polyglot Hash: 0x" + PolyglotHelper.GetPolyglotKey(board).ToString("x"));
+        Span<Move> moves = stackalloc Move[MoveGenerator.MaxMoves];
+        board.GetLegalMovesNonAlloc(ref moves);
+        
+        // Opening Book
+        if (board.PlyCount < 20)
+        {
+            var polyglotKey = PolyglotHelper.GetPolyglotKey(board);
+
+            if (PolyglotHelper.TryPickMove(_openingBook, polyglotKey, out var polyglotEntry))
+            {
+                var move = PolyglotHelper.FindMatchingMove(moves, polyglotEntry.Move);
+                if (move.HasValue)
+                    return move.Value;
+            }
+        }
+        
+        ConsoleHelper.Log("SEARCHING FOR MOVE AT PLY: " + board.PlyCount);
         
         // Decay History
         if (board.PlyCount % 6 == 0 && board.PlyCount > 1) 
@@ -76,9 +94,6 @@ public class EthanBot : IChessBot
         }
         
         var (zKey, _, entry) = GetZobrist(board);
-
-        Span<Move> moves = stackalloc Move[MoveGenerator.MaxMoves];
-        board.GetLegalMovesNonAlloc(ref moves);
 
         _cancelSearch = false;
         _timer = timer;
@@ -492,7 +507,7 @@ public class EthanBot : IChessBot
     private static readonly int[] MobilityMiddlegame = [0, 0, 4, 5, 2, 1, 0];
     private static readonly int[] MobilityEndgame = [0, 0, 2, 3, 2, 1, 0];
 
-    private static readonly int[] PassedPawnsMiddlegame = [0, 0, 5, 10, 20, 35, 60, 0];
+    private static readonly int[] PassedPawnsMiddlegame = [0, 0, 5, 10, 15, 25, 45, 0];
     private static readonly int[] PassedPawnsEndgame = [0, 0, 20, 40, 70, 120, 200, 0];
 
     private static readonly ulong[] FileMasks =
