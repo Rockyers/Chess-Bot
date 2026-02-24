@@ -31,7 +31,7 @@ public class EthanBot : IChessBot
 
     private Move _previousBestMove = Move.NullMove;
 
-    private static PolyglotHelper.PolyglotEntry[] _openingBook = PolyglotHelper.LoadPolyglotBook("/Users/ethan/RiderProjects/Chess-Bot/Chess-Challenge/src/My Bot/Ethan Bot/OpeningBook/komodo.bin");
+    private static readonly PolyglotHelper.PolyglotEntry[] OpeningBook = PolyglotHelper.LoadPolyglotBook("/Users/ethan/RiderProjects/Chess-Bot/Chess-Challenge/src/My Bot/Ethan Bot/OpeningBook/komodo.bin");
     
     // Transposition Table
     private const int TTSize = 1 << 22; // ~4M entries
@@ -74,15 +74,13 @@ public class EthanBot : IChessBot
         {
             var polyglotKey = PolyglotHelper.GetPolyglotKey(board);
 
-            if (PolyglotHelper.TryPickMove(_openingBook, polyglotKey, out var polyglotEntry))
+            if (PolyglotHelper.TryPickMove(OpeningBook, polyglotKey, out var polyglotEntry))
             {
                 var move = PolyglotHelper.FindMatchingMove(moves, polyglotEntry.Move);
                 if (move.HasValue)
                     return move.Value;
             }
         }
-        
-        ConsoleHelper.Log("SEARCHING FOR MOVE AT PLY: " + board.PlyCount);
         
         // Decay History
         if (board.PlyCount % 6 == 0 && board.PlyCount > 1) 
@@ -550,9 +548,7 @@ public class EthanBot : IChessBot
         EvaluateMobility(board, true, ref middleGameEval, ref endGameEval);
         EvaluateMobility(board, false, ref middleGameEval, ref endGameEval);
         
-        // Expensive so reserve for opening/later in the game after pieces are gone
-        if (board.PlyCount < 6 || phase > 20)
-            EvaluatePawnStructure(board, ref middleGameEval, ref endGameEval);
+        EvaluatePawnStructure(board, ref middleGameEval, ref endGameEval);
         
         EvaluatePassedPawns(board, ref middleGameEval, ref endGameEval);
         EvaluateTempo(board, ref middleGameEval, ref endGameEval);
@@ -787,10 +783,10 @@ public class EthanBot : IChessBot
         endGameEval += endgameScore;
     }
 
-    private static int _doubledPawnPenalty = 15;
-    private static int _isolatedPawnPenalty = 20;
-    private static int _backwardsPawnPenalty = 10;
-    private static int _pawnChainReward = 5;
+    private static int _doubledPawnPenalty = 22;
+    private static int _isolatedPawnPenalty = 25;
+    private static int _backwardsPawnPenalty = 11;
+    private static int _pawnChainReward = 8;
 
     private static int EvaluatePawnStructure(ulong pawns, ulong opponentPawns, bool isWhite)
     {
